@@ -1,6 +1,7 @@
 import torch
 import math
 import numpy as np
+import pandas as pd
 import torch.nn.functional as F
 from e2efold.common.utils import unravel2d_torch, F1_low_tri, encoding2seq
 from e2efold.common.utils import constraint_matrix, constraint_matrix_batch
