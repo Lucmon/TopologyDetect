@@ -125,7 +125,7 @@ for t in range(max_iter):
                 x_new[p*n+q]=x[p*n+q]-eta*res
         gap=np.linalg.norm(x_new2-x_new)
         x_new2=x_new.copy()
-        cnt+=1
+        #cnt+=1
     if np.linalg.norm(x-x_new)<eps:
         break
     x=x_new.copy()
