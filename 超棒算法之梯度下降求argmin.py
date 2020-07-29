@@ -105,7 +105,7 @@ for t in range(max_iter):
      #       b[p*n+q]=QList[p*n+q]+gList[p*n+q]-(QList[m*n+p*n+q]+gList[m*n+p*n+q])-(QList[2*m*n+p]+gList[2*m*n+p])+(QList[2*m*n+m+p]+gList[2*m*n+m+p])+QList[2*m*n+2*m+p*n+q]+gList[2*m*n+2*m+p*n+q]-(QList[3*m*n+2*m+p*n+q]+gList[3*m*n+2*m+p*n+q])+2*alpha*x[p*n+q]
     #梯度下降，直到gap=np.linalg.norm(x_new2-x_new)比较小
     gap=1
-    cnt=1
+    #cnt=1
     while gap>eps:
         #eta==0.01/(cnt+1)
         for p in range(m):
