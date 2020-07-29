@@ -35,10 +35,6 @@ for i in range(m):
             for i2,l in enumerate(range((j*n),((j+1)*n),1)):
                 TT[k][l]=TTT[i][j][i1][i2]
                 
-L=np.zeros(m*n)
-for i in range(m):
-    L[(i*n)+structure[-1][i]]=1
-
 
 
 
