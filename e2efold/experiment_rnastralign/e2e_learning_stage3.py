@@ -19,6 +19,7 @@ print('Here is the configuration of this run: ')
 print(config)
 
 os.environ["CUDA_VISIBLE_DEVICES"]= config.gpu
+os.environ["CUDA_VISIBLE_DEVICES"] = '2'
 
 d = config.u_net_d
 BATCH_SIZE = config.BATCH_SIZE
@@ -238,8 +239,23 @@ if not args.test:
 
             PE_batch = get_pe(seq_lens, seq_len).float().to(device)
             # the end to end model
-            pred_contacts, a_pred_list = rna_ss_e2e(PE_batch, 
-                seq_embedding_batch, state_pad)
+
+            #pred_contacts, a_pred_list = rna_ss_e2e(PE_batch, # prior
+            #    seq_embedding_batch, state_pad) # seq, state
+
+            # perception: deep score network
+            pred_contacts = contact_net(PE_batch, seq_embedding_batch, state_pad)
+
+            params = Parameter(contact_net)
+            
+            # post-processing runner
+            params += Parameter(lag_pp_net)
+            runner.run_experiment(
+                params=params,
+                train_loss_fn=train_fn,
+                make_state_fn=lambda horizon:None,
+                eval_fn=eval_fn
+            )
 
             loss_u = criterion_bce_weighted(pred_contacts*contact_masks, contacts_batch)
 

@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
 import math
-from e2efold.common.utils import soft_sign
+from e2efold.common.utils import soft_sign, f1_loss
 import numpy as np
 from scipy.sparse import diags
 
@@ -484,9 +484,9 @@ class Lag_PP_NN(nn.Module):
         rho_fc = self.rho_fc_list[t]
         input_features = torch.cat([torch.unsqueeze(a_hat,-1),
             torch.unsqueeze(grad,-1), torch.unsqueeze(u,-1)], -1).view(-1, 3)
-        a_hat_updated = a_hat_fc(input_features).view(a_hat.shape)
+        a_hat_updated = a_hat_fc(input_features).view(a_hat.shape)  
 
-        rho = rho_fc(input_features).view(a_hat.shape)
+        rho = rho_fc(input_features).view(a_hat.shape) # rho直接从input_feature里学，用RT之后如何反向传播？
         a_hat_updated = F.relu(torch.abs(a_hat_updated) - rho)
         # a_hat_updated = F.relu(torch.abs(a_hat_updated) - self.rho)
         a_hat_updated = torch.clamp(a_hat_updated, -1, 1)
@@ -860,7 +860,7 @@ class Lag_PP_final(Lag_PP_zero):
         self.lr_decay_beta = nn.Parameter(torch.Tensor([0.99]))
         self.rho_mode = rho_mode
 
-
+    """
     def forward(self, u, x):
         a_t_list = list()
         a_hat_t_list = list()
@@ -893,6 +893,47 @@ class Lag_PP_final(Lag_PP_zero):
 
         # return a_updated
         return a_t_list[1:]
+    """
+    
+    def test_net():  
+        loss_u = criterion_bce_weighted(pred_contacts*contact_masks, contacts_batch)
+
+        # Compute loss, consider the intermidate output
+        if pp_loss == "l2":
+            loss_a = criterion_mse(
+                a_pred_list[-1]*contact_masks, contacts_batch)
+            for i in range(pp_steps-1):
+                loss_a += np.power(step_gamma, pp_steps-1-i)*criterion_mse(
+                    a_pred_list[i]*contact_masks, contacts_batch)
+            mse_coeff = 1.0/(seq_len*pp_steps)
+
+        if pp_loss == 'f1':
+            loss_a = f1_loss(a_pred_list[-1]*contact_masks, contacts_batch)
+            for i in range(pp_steps-1):
+                loss_a += np.power(step_gamma, pp_steps-1-i)*f1_loss(
+                    a_pred_list[i]*contact_masks, contacts_batch)            
+            mse_coeff = 1.0/pp_steps
+
+        loss_a = mse_coeff*loss_a
+
+        loss = loss_u + loss_a
+        return loss
+
+    def train_fn(state, params, timesteps):
+        net = Net()
+        a_update = train_net(u, x, timesteps)
+        avg_loss = test_net(a_update, timesteps)
+
+        compute = timesteps
+        return avg_loss, compute
+
+    def forward(self, u, x):
+        runner.run_experiment(  # import runner
+            params=params,  # params 
+            train_loss_fn=train_fn,
+            make_state_fn=lambda horizon: None,
+            eval_fn=eval_fn
+        )
 
     def update_rule(self, u, m, lmbd, a, a_hat, t):
         grad_a = - u / 2 + (lmbd * soft_sign(torch.sum(a,
@@ -925,6 +966,152 @@ class RNA_SS_e2e(nn.Module):
         map_list = self.model_pp(u, seq)
         return u, map_list
 
+def eval_fn(params, timesteps, tflogger, step):
+    contact_net.eval()
+    lag_pp_net.eval()
+    result_no_train = list()
+    result_no_train_shift = list()
+    result_pp = list()
+    result_pp_shift = list()
+
+    f1_no_train = list()
+    f1_pp = list()
+    seq_lens_list = list()
+
+    batch_n = 0
+    for contacts, seq_embeddings, matrix_reps, seq_lens in test_generator:
+        if batch_n %10==0:
+            print('Batch number: ', batch_n)
+        batch_n += 1
+        contacts_batch = torch.Tensor(contacts.float()).to(device)
+        seq_embedding_batch = torch.Tensor(seq_embeddings.float()).to(device)
+        matrix_reps_batch = torch.unsqueeze(
+            torch.Tensor(matrix_reps.float()).to(device), -1)
+
+        state_pad = torch.zeros(contacts.shape).to(device)
+
+        PE_batch = get_pe(seq_lens, contacts.shape[-1]).float().to(device)
+        with torch.no_grad():
+            pred_contacts = contact_net(PE_batch, 
+                seq_embedding_batch, state_pad)
+            a_pred_list = lag_pp_net(pred_contacts, seq_embedding_batch)
+
+        # the learning pp result
+        final_pred = (a_pred_list[-1].cpu()>0.5).float()
+        result_tmp = list(map(lambda i: evaluate_exact(final_pred.cpu()[i], 
+            contacts_batch.cpu()[i]), range(contacts_batch.shape[0])))
+        result_pp += result_tmp
+
+        result_tmp_shift = list(map(lambda i: evaluate_shifted(final_pred.cpu()[i], 
+            contacts_batch.cpu()[i]), range(contacts_batch.shape[0])))
+        result_pp_shift += result_tmp_shift
+
+        f1_tmp = list(map(lambda i: F1_low_tri(final_pred.cpu()[i], 
+            contacts_batch.cpu()[i]), range(contacts_batch.shape[0])))
+        f1_pp += f1_tmp
+        seq_lens_list += list(seq_lens)
+
+
+    pp_exact_p,pp_exact_r,pp_exact_f1 = zip(*result_pp)
+    pp_shift_p,pp_shift_r,pp_shift_f1 = zip(*result_pp_shift)  
+    print('Average testing F1 score with learning post-processing: ', np.average(pp_exact_f1))
+    print('Average testing F1 score with learning post-processing allow shift: ', np.average(pp_shift_f1))
+
+    print('Average testing precision with learning post-processing: ', np.average(pp_exact_p))
+    print('Average testing precision with learning post-processing allow shift: ', np.average(pp_shift_p))
+
+    print('Average testing recall with learning post-processing: ', np.average(pp_exact_r))
+    print('Average testing recall with learning post-processing allow shift: ', np.average(pp_shift_r))
+
+    e2e_result_df = pd.DataFrame()
+    e2e_result_df['name'] = [a.name for a in test_data.data]
+    e2e_result_df['type'] = list(map(lambda x: x.split('/')[2], [a.name for a in test_data.data]))
+    e2e_result_df['seq_lens'] = list(map(lambda x: x.numpy(), seq_lens_list))
+    e2e_result_df['exact_p'] = pp_exact_p
+    e2e_result_df['exact_r'] = pp_exact_r
+    e2e_result_df['exact_f1'] = pp_exact_f1
+    e2e_result_df['shift_p'] = pp_shift_p
+    e2e_result_df['shift_r'] = pp_shift_r
+    e2e_result_df['shift_f1'] = pp_shift_f1
+    for rna_type in e2e_result_df['type'].unique():
+        print(rna_type)
+        df_temp = e2e_result_df[e2e_result_df.type==rna_type]
+        to_output = list(map(str, 
+            list(df_temp[['exact_p', 'exact_r', 'exact_f1', 'shift_p','shift_r', 'shift_f1']].mean().values.round(3))))
+        print(to_output)
+
+def train_fn(state, params, model_pp, pred_contacts, x, timesteps):
+    a_pred_list = train_net(pred_contacts, x, timesteps)
+    avg_loss = test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config)
+
+    compute = timesteps
+    return avg_loss, compute
+
+def train_net(u, x, timesteps):
+    a_t_list = list()
+    a_hat_t_list = list()
+    lmbd_t_list = list()
+
+    m = self.constraint_matrix_batch(x) # N*L*L
+
+    u = soft_sign(u - self.s, self.k) * u
+
+    # initialization
+    a_hat_tmp = (torch.sigmoid(u)) * soft_sign(u - self.s, self.k).detach()
+    a_tmp = self.contact_a(a_hat_tmp, m)
+    lmbd_tmp = self.w * F.relu(torch.sum(a_tmp, dim=-1) - 1).detach()
+
+    lmbd_t_list.append(lmbd_tmp)
+    a_t_list.append(a_tmp)
+    a_hat_t_list.append(a_hat_tmp)
+    # gradient descent
+    for t in range(timesteps):
+        lmbd_updated, a_updated, a_hat_updated = self.update_rule(
+            u, m, lmbd_tmp, a_tmp, a_hat_tmp, t)
+
+        a_hat_tmp = a_hat_updated
+        a_tmp = a_updated
+        lmbd_tmp = lmbd_updated
+
+        lmbd_t_list.append(lmbd_tmp)
+        a_t_list.append(a_tmp)
+        a_hat_t_list.append(a_hat_tmp)
+
+    # return a_updated
+    return a_t_list[1:]
+
+pos_weight = torch.Tensor([300]).to(device)
+criterion_bce_weighted = torch.nn.BCEWithLogitsLoss(
+    pos_weight = pos_weight)
+criterion_mse = torch.nn.MSELoss(reduction='sum')
+
+def test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config): 
+    pp_steps = config.pp_steps
+    pp_loss = config.pp_loss
+    step_gamma = config.step_gamma
+
+    loss_u = criterion_bce_weighted(pred_contacts*contact_masks, contacts_batch)
+
+    # Compute loss, consider the intermidate output
+    if pp_loss == "l2":
+        loss_a = criterion_mse(
+            a_pred_list[-1]*contact_masks, contacts_batch)
+        for i in range(pp_steps-1):
+            loss_a += np.power(step_gamma, pp_steps-1-i)*criterion_mse(
+                a_pred_list[i]*contact_masks, contacts_batch)
+        mse_coeff = 1.0/(seq_len*pp_steps)
+
+    if pp_loss == 'f1':
+        loss_a = f1_loss(a_pred_list[-1]*contact_masks, contacts_batch)
+        for i in range(pp_steps-1):
+            loss_a += np.power(step_gamma, pp_steps-1-i)*f1_loss(
+                a_pred_list[i]*contact_masks, contacts_batch)            
+        mse_coeff = 1.0/pp_steps
+
+    loss_a = mse_coeff*loss_a
+
+    loss = loss_u + loss_a
+    return loss
 
 
 # only using convolutional layers is problematic
