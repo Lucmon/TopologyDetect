@@ -346,9 +346,11 @@ def make_telescope_and_weight():
     return telescope, weight_fn
 
 
-def loss_and_grads(loss_fn, state, params, optimizer, i):
+def loss_and_grads(loss_fn, state, params, inputs, optimizer, i):
     optimizer.zero_grad()
-    loss, compute = loss_fn(state, params, i)
+    #loss, compute = loss_fn(state, params, i)
+    pred_contacts, seq_embedding_batch = inputs
+    loss, compute = loss_fn(state, params, pred_contacts, seq_embedding_batch, i)                                                     )
     loss.backward()
     grads = []
     for p in params:
@@ -448,13 +450,14 @@ def do_convergence_update(grads_torch, params, optimizer):
     optimizer.step()
 
 
-def run_experiment(params, train_loss_fn, eval_fn, make_state_fn):
+def run_experiment(params, inputs, train_loss_fn, eval_fn, make_state_fn):
     setproctitle(FLAGS.name)
 
     logger, tflogger = make_logger()
 
     running_dnorm = RunningNorms(FLAGS.train_horizon+1)
 
+    pred_contacts, seq_embedding_batch = inputs
     weight_decay = 0. if not hasattr(FLAGS, 'weight_decay') else FLAGS.weight_decay
     #if FLAGS.variance_weight < 1.0 and FLAGS.rt:
     #    FLAGS.meta_lr = FLAGS.meta_lr * FLAGS.variance_weight
@@ -552,7 +555,7 @@ def run_experiment(params, train_loss_fn, eval_fn, make_state_fn):
                     tflogger, step)
 
                 state = make_state_fn(2**FLAGS.test_horizon+1)
-                test_horizon_loss, _ = train_loss_fn(state, params,
+                test_horizon_loss, _ = train_loss_fn(state, params, pred_contacts, seq_embedding_batch,
                                                      2**FLAGS.test_horizon+1)
                 test_horizon_loss = test_horizon_loss.item()
                 optimizer.zero_grad()

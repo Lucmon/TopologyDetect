@@ -112,7 +112,8 @@ if 'zero' in pp_type:
 if 'perturb' in pp_type:
     lag_pp_net = Lag_PP_perturb(pp_steps, k).to(device)
 if 'mixed'in pp_type:
-    lag_pp_net = Lag_PP_mixed(pp_steps, k, rho_per_position).to(device)
+    lag_pp_net = Lag_PP_mixed(
+        , k, rho_per_position).to(device)
 
 if LOAD_MODEL and os.path.isfile(model_path):
     print('Loading u net model...')
@@ -223,6 +224,23 @@ if not args.test:
     all_optimizer.zero_grad()
     for epoch in range(epoches_third):
         rna_ss_e2e.train()
+
+        # extract features
+        params = []
+        for p in rna_ss_e2e.parameters():
+            params.append(nn.Parameter(p.data.clone()))
+        params = tuple(params)
+
+        loaders = (train_generator, test_generator)
+
+        runner.run_experiment(
+            params = params,
+            loaders = loaders,
+            train_loss_fn = train_fn,
+            make_state_fn = lambda horizon:None,
+            eval_fn = eval_fn
+        )
+
         for contacts, seq_embeddings, matrix_reps, seq_lens in train_generator:
         # for train_step  in range(1000): 
         #     contacts, seq_embeddings, matrix_reps, seq_lens = next(iter(train_generator))
@@ -247,11 +265,16 @@ if not args.test:
             pred_contacts = contact_net(PE_batch, seq_embedding_batch, state_pad)
 
             params = Parameter(contact_net)
-            
+            params = []
+            for p in model.parameters():
+                params.append(nn.Parameter(p.data.clone()))
+            params = tuple(params)
             # post-processing runner
             params += Parameter(lag_pp_net)
+            inputs = (pred_contacts, seq_embedding_batch)
             runner.run_experiment(
                 params=params,
+                inputs=inputs,
                 train_loss_fn=train_fn,
                 make_state_fn=lambda horizon:None,
                 eval_fn=eval_fn

@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
 import math
-from e2efold.common.utils import soft_sign, f1_loss
+from e2efold.common.utils import soft_sign, f1_loss, evaluate_shifted, evaluate_exact, F1_low_tri
 import numpy as np
 from scipy.sparse import diags
 
@@ -894,46 +894,6 @@ class Lag_PP_final(Lag_PP_zero):
         # return a_updated
         return a_t_list[1:]
     """
-    
-    def test_net():  
-        loss_u = criterion_bce_weighted(pred_contacts*contact_masks, contacts_batch)
-
-        # Compute loss, consider the intermidate output
-        if pp_loss == "l2":
-            loss_a = criterion_mse(
-                a_pred_list[-1]*contact_masks, contacts_batch)
-            for i in range(pp_steps-1):
-                loss_a += np.power(step_gamma, pp_steps-1-i)*criterion_mse(
-                    a_pred_list[i]*contact_masks, contacts_batch)
-            mse_coeff = 1.0/(seq_len*pp_steps)
-
-        if pp_loss == 'f1':
-            loss_a = f1_loss(a_pred_list[-1]*contact_masks, contacts_batch)
-            for i in range(pp_steps-1):
-                loss_a += np.power(step_gamma, pp_steps-1-i)*f1_loss(
-                    a_pred_list[i]*contact_masks, contacts_batch)            
-            mse_coeff = 1.0/pp_steps
-
-        loss_a = mse_coeff*loss_a
-
-        loss = loss_u + loss_a
-        return loss
-
-    def train_fn(state, params, timesteps):
-        net = Net()
-        a_update = train_net(u, x, timesteps)
-        avg_loss = test_net(a_update, timesteps)
-
-        compute = timesteps
-        return avg_loss, compute
-
-    def forward(self, u, x):
-        runner.run_experiment(  # import runner
-            params=params,  # params 
-            train_loss_fn=train_fn,
-            make_state_fn=lambda horizon: None,
-            eval_fn=eval_fn
-        )
 
     def update_rule(self, u, m, lmbd, a, a_hat, t):
         grad_a = - u / 2 + (lmbd * soft_sign(torch.sum(a,
@@ -966,7 +926,8 @@ class RNA_SS_e2e(nn.Module):
         map_list = self.model_pp(u, seq)
         return u, map_list
 
-def eval_fn(params, timesteps, tflogger, step):
+def eval_fn(params, contact_net, contact_eval, lag_pp_eval, test_generator, timesteps, step):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     contact_net.eval()
     lag_pp_net.eval()
     result_no_train = list()
@@ -994,7 +955,8 @@ def eval_fn(params, timesteps, tflogger, step):
         with torch.no_grad():
             pred_contacts = contact_net(PE_batch, 
                 seq_embedding_batch, state_pad)
-            a_pred_list = lag_pp_net(pred_contacts, seq_embedding_batch)
+            #a_pred_list = lag_pp_net(pred_contacts, seq_embedding_batch)
+            a_pred_list = train_net(pred_contacts, seq_embedding_batch, timesteps)
 
         # the learning pp result
         final_pred = (a_pred_list[-1].cpu()>0.5).float()
@@ -1039,15 +1001,20 @@ def eval_fn(params, timesteps, tflogger, step):
         to_output = list(map(str, 
             list(df_temp[['exact_p', 'exact_r', 'exact_f1', 'shift_p','shift_r', 'shift_f1']].mean().values.round(3))))
         print(to_output)
+    
+    return {
+        'testing recall': np.average(pp_exact_r)
+    }
 
-def train_fn(state, params, model_pp, pred_contacts, x, timesteps):
-    a_pred_list = train_net(pred_contacts, x, timesteps)
+def train_fn(state, params, pred_contacts, seq, timesteps):
+    a_pred_list = train_net(pred_contacts, seq, model_pp, timesteps)
     avg_loss = test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config)
 
     compute = timesteps
     return avg_loss, compute
 
-def train_net(u, x, timesteps):
+def train_net(u, x, model_pp, timesteps):
+    # lag_pp forward
     a_t_list = list()
     a_hat_t_list = list()
     lmbd_t_list = list()
