@@ -449,14 +449,14 @@ def do_convergence_update(grads_torch, params, optimizer):
     optimizer.step()
 
 
-def run_experiment(params, inputs, train_loss_fn, eval_fn, make_state_fn):
+def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
     setproctitle(FLAGS.name)
 
     logger, tflogger = make_logger()
 
     running_dnorm = RunningNorms(FLAGS.train_horizon+1)
 
-    pred_contacts, seq_embedding_batch = inputs
+    train_generator, test_generator = loaders #retrieve loaders
     weight_decay = 0. if not hasattr(FLAGS, 'weight_decay') else FLAGS.weight_decay
     #if FLAGS.variance_weight < 1.0 and FLAGS.rt:
     #    FLAGS.meta_lr = FLAGS.meta_lr * FLAGS.variance_weight
