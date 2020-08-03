@@ -271,7 +271,7 @@ if not args.test:
             params = tuple(params)
             # post-processing runner
             params += Parameter(lag_pp_net)
-            inputs = (pred_contacts, seq_embedding_batch)
+            inputs = (PE_batch, seq_embedding_batch, state_pad)
             runner.run_experiment(
                 params=params,
                 inputs=inputs,

@@ -346,11 +346,10 @@ def make_telescope_and_weight():
     return telescope, weight_fn
 
 
-def loss_and_grads(loss_fn, state, params, inputs, optimizer, i):
+def loss_and_grads(loss_fn, inputs_batch, config, state, params, optimizer, i):
     optimizer.zero_grad()
     #loss, compute = loss_fn(state, params, i)
-    pred_contacts, seq_embedding_batch = inputs
-    loss, compute = loss_fn(state, params, pred_contacts, seq_embedding_batch, i)                                                     )
+    loss, compute = loss_fn(state, params, inputs_batch, config, i)                                                     )
     loss.backward()
     grads = []
     for p in params:
@@ -542,6 +541,7 @@ def run_experiment(params, inputs, train_loss_fn, eval_fn, make_state_fn):
             else:
                 lr_drop_computes = []
 
+        # eval_fn
         if idx_counter >= test_counter:
             with Timer() as t:
                 # logger.info('Evaluating...')
@@ -644,181 +644,197 @@ def run_experiment(params, inputs, train_loss_fn, eval_fn, make_state_fn):
                 logger.info("Convergence update time: {}".format(t2.interval))
             logger.info("Convergence time: {}".format(t.interval))
 
+        # train
         with Timer() as t:
-            log = str(step)
-            optimizer.zero_grad()
-            if step >= FLAGS.burn_in:
-                idx = telescope.sample_idx()
-            else:
-                idx = FLAGS.train_horizon
+            for contacts, seq_embeddings, matrix_reps, seq_lens in train_generator:
+                contacts_batch = torch.Tensor(contacts.float()).to(device)
+                seq_embedding_batch = torch.Tensor(seq_embeddings.float()).to(device)
+                matrix_reps_batch = torch.unsqueeze(
+                    torch.Tensor(matrix_reps.float()).to(device), -1)
+                
+                contact_masks = torch.Tensor(contact_map_masks(seq_lens, seq_len)).to(device)
+                # padding the states for supervised training with all 0s
+                state_pad = torch.zeros([matrix_reps_batch.shape[0], 
+                    seq_len, seq_len]).to(device)
 
-            # logger.info("horizon: %i, index: %i" % (FLAGS.test_horizon, idx+1))
-            log += ",{}".format(idx)
-            tflogger.log_scalar('idx', idx, step)
+                PE_batch = get_pe(seq_lens, seq_len).float().to(device)
+                inputs_batch = (PE_batch, seq_embedding_batch, state_pad, contact_masks, contacts_batch)
 
-            losses = []
-            grads_torch = []
-            computes = []
-            state = make_state_fn(2**idx + 1)
-            print("------------")
-            print(idx)
-            print(telescope.idxs)
-            print(isinstance(telescope, CollapsedFixedTelescope))
-            print("-----------")
-            for j in range(idx + 1):
-                if j in telescope.idxs:
-                    l, g, c = loss_and_grads(
-                        train_loss_fn, state,
-                        params, optimizer, 2**(j) + 1)
+                log = str(step)
+                optimizer.zero_grad()
+                if step >= FLAGS.burn_in:
+                    idx = telescope.sample_idx()
                 else:
-                    l = 0.0
-                    g = [torch.zeros_like(p.data)
-                         for p in params]
-                    c = 0
-                if j > 0 and FLAGS.cumulative_regret:
-                    l = l + losses[j-1]
-                    g = [g1 + g2 for g1, g2 in zip(g, grads[j-1])]
-                losses.append(l)
-                grads_torch.append(g)
-                computes.append(c)
-            #pdb.set_trace()
-            if step >= FLAGS.burn_in:
-                loss = proc_loss(losses, weight_fn,
-                                  idxs=telescope.idxs if FLAGS.optimize_subseq
-                                  and FLAGS.rt
-                                  else None)
-            else:
-                loss = proc_loss(losses, None)
+                    idx = FLAGS.train_horizon
 
-            if FLAGS.clip_intermediate:
-                grads_torch = [clip_by_norm_torch(gpi, max_norm)
-                                 for gpi in grads_torch]
+                # logger.info("horizon: %i, index: %i" % (FLAGS.test_horizon, idx+1))
+                log += ",{}".format(idx)
+                tflogger.log_scalar('idx', idx, step)
 
-            grads_per_param = [[g[pidx] for g in grads_torch]
-                   for pidx in range(len(params))]
-
-            if step >= FLAGS.burn_in:
-                processed_grads = [proc_grads(g, weight_fn,
-                                   idxs=telescope.idxs if FLAGS.optimize_subseq
-                                   and FLAGS.rt else None)
-                                   for g in grads_per_param]
-            else:
-                processed_grads = [proc_grads(g, None)
-                                   for g in grads_per_param]
-
-            '''
-            if idx == FLAGS.train_horizon:
-                convergence_outputs = measure_convergence(
-                    losses, grads, params, telescope,
-                    weight_fn, optimizer, running_dnorm, tflogger, logger,
-                    step, max_norm
-                )
-                telescope, weight_fn, running_dnorm, max_norm = (
-                    convergence_outputs
-                )
-            elif FLAGS.partial_update:
-                flat_grads_per_idx = [np.concatenate([
-                    grads_per_param[pidx][idx].flatten()
-                    for pidx in range(len(params))])
-                    for idx in range(len(losses))]
-                sq_norms = deltas_from_grads(flat_grads_per_idx)
-                running_dnorm.update(sq_norms)
-
-                if FLAGS.optimize_subseq and FLAGS.rt:
-                    telescope, weight_fn = optimize_collapsed_telescope(
-                        running_dnorm.get_norms())
-            '''
-
-            if FLAGS.post_clip > 0:
-                processed_grads = clip_by_norm_torch(processed_grads, FLAGS.post_clip)
-
-            optimizer.zero_grad()
-            for p, g in zip(params, processed_grads):
-                p.grad = g
-            if FLAGS.slow_optimizer:
-                _opt_state = copy.deepcopy(optimizer.state_dict)
-            optimizer.step()
-            if FLAGS.slow_optimizer:
-                optimizer.load_state_dict(_opt_state)
-
-            idx_costs = [2**i+1 for i in range(len(computes))]
-            if FLAGS.rt and FLAGS.partial_update:
-                compute = compute + sum(computes)
-                idx_counter = idx_counter + sum(idx_costs)
-
-
-            elif FLAGS.rt and FLAGS.compute_penalty and step >= FLAGS.burn_in:
-                if FLAGS.cdf:
-                    if FLAGS.optimize_subseq:
-                        compute = compute + sum(computes)
-                        idx_counter = idx_counter + sum(
-                            idx_costs[j] for j in telescope.idxs if j <= idx
-                        )
+                losses = []
+                grads_torch = []
+                computes = []
+                state = make_state_fn(2**idx + 1)
+                print("------------")
+                print(idx)
+                print(telescope.idxs)
+                print(isinstance(telescope, CollapsedFixedTelescope))
+                print("-----------")
+                # calculate the loss and grads
+                for j in range(idx + 1):
+                    if j in telescope.idxs:
+                        l, g, c = loss_and_grads(
+                            train_loss_fn, inputs_batch, config, state,  # train_loss_fn
+                            params, optimizer, 2**(j) + 1)
                     else:
-                        compute = compute + sum(computes)
-                        idx_counter = idx_counter + sum(idx_costs)
+                        l = 0.0
+                        g = [torch.zeros_like(p.data)
+                            for p in params]
+                        c = 0
+                    if j > 0 and FLAGS.cumulative_regret:
+                        l = l + losses[j-1]
+                        g = [g1 + g2 for g1, g2 in zip(g, grads[j-1])]
+                    losses.append(l)
+                    grads_torch.append(g)
+                    computes.append(c)
+                #pdb.set_trace()
+                if step >= FLAGS.burn_in:
+                    loss = proc_loss(losses, weight_fn,
+                                    idxs=telescope.idxs if FLAGS.optimize_subseq
+                                    and FLAGS.rt
+                                    else None)
+                else:
+                    loss = proc_loss(losses, None)
+
+                if FLAGS.clip_intermediate:
+                    grads_torch = [clip_by_norm_torch(gpi, max_norm)
+                                    for gpi in grads_torch]
+
+                grads_per_param = [[g[pidx] for g in grads_torch]
+                    for pidx in range(len(params))]
+                # process grads
+                if step >= FLAGS.burn_in:
+                    processed_grads = [proc_grads(g, weight_fn,
+                                    idxs=telescope.idxs if FLAGS.optimize_subseq
+                                    and FLAGS.rt else None)
+                                    for g in grads_per_param]
+                else:
+                    processed_grads = [proc_grads(g, None)
+                                    for g in grads_per_param]
+
+                '''
+                if idx == FLAGS.train_horizon:
+                    convergence_outputs = measure_convergence(
+                        losses, grads, params, telescope,
+                        weight_fn, optimizer, running_dnorm, tflogger, logger,
+                        step, max_norm
+                    )
+                    telescope, weight_fn, running_dnorm, max_norm = (
+                        convergence_outputs
+                    )
+                elif FLAGS.partial_update:
+                    flat_grads_per_idx = [np.concatenate([
+                        grads_per_param[pidx][idx].flatten()
+                        for pidx in range(len(params))])
+                        for idx in range(len(losses))]
+                    sq_norms = deltas_from_grads(flat_grads_per_idx)
+                    running_dnorm.update(sq_norms)
+
+                    if FLAGS.optimize_subseq and FLAGS.rt:
+                        telescope, weight_fn = optimize_collapsed_telescope(
+                            running_dnorm.get_norms())
+                '''
+
+                if FLAGS.post_clip > 0:
+                    processed_grads = clip_by_norm_torch(processed_grads, FLAGS.post_clip)
+                # update parameters
+                optimizer.zero_grad()
+                for p, g in zip(params, processed_grads):
+                    p.grad = g
+                if FLAGS.slow_optimizer:
+                    _opt_state = copy.deepcopy(optimizer.state_dict)
+                optimizer.step()
+                if FLAGS.slow_optimizer:
+                    optimizer.load_state_dict(_opt_state)
+                # update idx_counter
+                idx_costs = [2**i+1 for i in range(len(computes))]
+                if FLAGS.rt and FLAGS.partial_update:
+                    compute = compute + sum(computes)
+                    idx_counter = idx_counter + sum(idx_costs)
+
+
+                elif FLAGS.rt and FLAGS.compute_penalty and step >= FLAGS.burn_in:
+                    if FLAGS.cdf:
+                        if FLAGS.optimize_subseq:
+                            compute = compute + sum(computes)
+                            idx_counter = idx_counter + sum(
+                                idx_costs[j] for j in telescope.idxs if j <= idx
+                            )
+                        else:
+                            compute = compute + sum(computes)
+                            idx_counter = idx_counter + sum(idx_costs)
+
+                    else:
+                        compute = compute + computes[-1]
+                        idx_counter = idx_counter + idx_costs[-1]
+                        if FLAGS.optimize_subseq:
+                            idx2 = idx - 1
+                            while idx2 >= 0:
+                                if idx2 in telescope.idxs:
+                                    compute = compute + computes[idx2]
+                                    idx_counter = idx_counter + idx_costs[idx2]
+                                    idx2 = -1
+                                idx2 -= 1
+                        else:
+                            compute = compute + (0. if idx < 1 else computes[idx-1])
+                            idx_counter = idx_counter + (0. if idx < 1 else idx_costs[idx-1])
+
 
                 else:
-                    compute = compute + computes[-1]
-                    idx_counter = idx_counter + idx_costs[-1]
-                    if FLAGS.optimize_subseq:
-                        idx2 = idx - 1
-                        while idx2 >= 0:
-                            if idx2 in telescope.idxs:
-                                compute = compute + computes[idx2]
-                                idx_counter = idx_counter + idx_costs[idx2]
-                                idx2 = -1
-                            idx2 -= 1
-                    else:
-                        compute = compute + (0. if idx < 1 else computes[idx-1])
-                        idx_counter = idx_counter + (0. if idx < 1 else idx_costs[idx-1])
+                    compute = compute + computes[idx]
+                    idx_counter = idx_counter + idx_costs[idx]
+                print("compute:")
+                print(compute)
+                for k in eval_headers:
+                    v = test_stats[k]
+                    log += ",{}".format(v)
+                log += ",{}".format(test_horizon_loss)
 
+                total_losses.append(total_loss)
+                total_compute.append(compute)
+                # logger.info('total compute: %i' % total_compute[-1])
+                log += ",{}".format(total_compute[-1])
+                log += ",{}".format(idx_counter)
 
-            else:
-                compute = compute + computes[idx]
-                idx_counter = idx_counter + idx_costs[idx]
-            print("compute:")
-            print(compute)
-            for k in eval_headers:
-                v = test_stats[k]
-                log += ",{}".format(v)
-            log += ",{}".format(test_horizon_loss)
+                tflogger.log_scalar('total_compute', total_compute[-1], step)
 
-            total_losses.append(total_loss)
-            total_compute.append(compute)
-            # logger.info('total compute: %i' % total_compute[-1])
-            log += ",{}".format(total_compute[-1])
-            log += ",{}".format(idx_counter)
+                if not np.isnan(loss):
+                    tflogger.log_scalar('loss', loss, step)
+                    # raise Exception("NaN loss found")
+                # print('loss2: %f' % np.sum(A_numpy[-1]))
+                # logger.info('lr: %f' % lr.data.cpu().numpy())
+                # logger.info('mom: %f' % mom.data.cpu().numpy())
+                log += ",{}".format(loss)
 
-            tflogger.log_scalar('total_compute', total_compute[-1], step)
+                log += ",{}".format(params[0].data.cpu().numpy().mean())
+                '''
+                for pidx, p in enumerate(params):
+                    tflogger.log_scalar('param_' + str(pidx),
+                                        p.data.cpu().numpy(), step)
+                '''
 
-            if not np.isnan(loss):
-                tflogger.log_scalar('loss', loss, step)
-                # raise Exception("NaN loss found")
-            # print('loss2: %f' % np.sum(A_numpy[-1]))
-            # logger.info('lr: %f' % lr.data.cpu().numpy())
-            # logger.info('mom: %f' % mom.data.cpu().numpy())
-            log += ",{}".format(loss)
-
-            log += ",{}".format(params[0].data.cpu().numpy().mean())
-            '''
-            for pidx, p in enumerate(params):
-                tflogger.log_scalar('param_' + str(pidx),
-                                    p.data.cpu().numpy(), step)
-            '''
-
-            # print(A_numpy.T[-2:])
-            # logger.info("\n")
-            if step == 0:
-                logger.info("iter,idx," + ','.join(eval_headers) +
-                            ",test_horizon_loss,total_compute,idx_counter,cost,first_param_mean")
-            logger.info(log)
-            step += 1
-            for i, p in enumerate(params):
-                test_param_accumulators[i] = (
-                    (1 - 2/(step+2)) * test_param_accumulators[i] +
-                    (2/(step+2)) * p.data.clone()
-                )
+                # print(A_numpy.T[-2:])
+                # logger.info("\n")
+                if step == 0:
+                    logger.info("iter,idx," + ','.join(eval_headers) +
+                                ",test_horizon_loss,total_compute,idx_counter,cost,first_param_mean")
+                logger.info(log)
+                step += 1
+                for i, p in enumerate(params):
+                    test_param_accumulators[i] = (
+                        (1 - 2/(step+2)) * test_param_accumulators[i] +
+                        (2/(step+2)) * p.data.clone()
+                    )
         logger.info("Step time: {}".format(t.interval))
     logger.info("Completed run with compute {}".format(compute))
 

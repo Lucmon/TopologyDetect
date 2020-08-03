@@ -860,8 +860,8 @@ class Lag_PP_final(Lag_PP_zero):
         self.lr_decay_beta = nn.Parameter(torch.Tensor([0.99]))
         self.rho_mode = rho_mode
 
-    """
-    def forward(self, u, x):
+    
+    def forward(self, u, x, timesteps):
         a_t_list = list()
         a_hat_t_list = list()
         lmbd_t_list = list()
@@ -879,7 +879,7 @@ class Lag_PP_final(Lag_PP_zero):
         a_t_list.append(a_tmp)
         a_hat_t_list.append(a_hat_tmp)
         # gradient descent
-        for t in range(self.steps):
+        for t in range(timesteps):
             lmbd_updated, a_updated, a_hat_updated = self.update_rule(
                 u, m, lmbd_tmp, a_tmp, a_hat_tmp, t)
 
@@ -893,7 +893,7 @@ class Lag_PP_final(Lag_PP_zero):
 
         # return a_updated
         return a_t_list[1:]
-    """
+    
 
     def update_rule(self, u, m, lmbd, a, a_hat, t):
         grad_a = - u / 2 + (lmbd * soft_sign(torch.sum(a,
@@ -923,7 +923,7 @@ class RNA_SS_e2e(nn.Module):
         
     def forward(self, prior, seq, state):
         u = self.model_att(prior, seq, state)
-        map_list = self.model_pp(u, seq)
+        map_list = self.model_pp(u, seq, timesteps)
         return u, map_list
 
 def eval_fn(params, contact_net, contact_eval, lag_pp_eval, test_generator, timesteps, step):
@@ -1006,46 +1006,18 @@ def eval_fn(params, contact_net, contact_eval, lag_pp_eval, test_generator, time
         'testing recall': np.average(pp_exact_r)
     }
 
-def train_fn(state, params, pred_contacts, seq, timesteps):
-    a_pred_list = train_net(pred_contacts, seq, model_pp, timesteps)
+def train_fn(state, params, inputs, config, timesteps):
+    PE_batch, seq_embedding_batch, state_pad, contact_masks, contacts_batch = inputs  # retrieve inputs
+    assign_parmas(rna_ss_e2e, params) # restore the model
+
+    rna_ss_e2e.train()
+    pred_contacts, a_pred_list = rna_ss_e2e(PE_batch, # prior
+            seq_embedding_batch, state_pad, timesteps) # seq, state
+
     avg_loss = test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config)
 
     compute = timesteps
     return avg_loss, compute
-
-def train_net(u, x, model_pp, timesteps):
-    # lag_pp forward
-    a_t_list = list()
-    a_hat_t_list = list()
-    lmbd_t_list = list()
-
-    m = self.constraint_matrix_batch(x) # N*L*L
-
-    u = soft_sign(u - self.s, self.k) * u
-
-    # initialization
-    a_hat_tmp = (torch.sigmoid(u)) * soft_sign(u - self.s, self.k).detach()
-    a_tmp = self.contact_a(a_hat_tmp, m)
-    lmbd_tmp = self.w * F.relu(torch.sum(a_tmp, dim=-1) - 1).detach()
-
-    lmbd_t_list.append(lmbd_tmp)
-    a_t_list.append(a_tmp)
-    a_hat_t_list.append(a_hat_tmp)
-    # gradient descent
-    for t in range(timesteps):
-        lmbd_updated, a_updated, a_hat_updated = self.update_rule(
-            u, m, lmbd_tmp, a_tmp, a_hat_tmp, t)
-
-        a_hat_tmp = a_hat_updated
-        a_tmp = a_updated
-        lmbd_tmp = lmbd_updated
-
-        lmbd_t_list.append(lmbd_tmp)
-        a_t_list.append(a_tmp)
-        a_hat_t_list.append(a_hat_tmp)
-
-    # return a_updated
-    return a_t_list[1:]
 
 pos_weight = torch.Tensor([300]).to(device)
 criterion_bce_weighted = torch.nn.BCEWithLogitsLoss(
