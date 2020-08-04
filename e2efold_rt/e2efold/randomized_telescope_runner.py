@@ -551,13 +551,12 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
                     testparams = params
                 #try:
                 test_stats = eval_fn(
-                    testparams, 2**(FLAGS.test_horizon) + 1,
-                    tflogger, step)
+                    testparams, test_generator, 2**(FLAGS.test_horizon) + 1)
 
                 state = make_state_fn(2**FLAGS.test_horizon+1)
-                test_horizon_loss, _ = train_loss_fn(state, params, pred_contacts, seq_embedding_batch,
-                                                     2**FLAGS.test_horizon+1)
-                test_horizon_loss = test_horizon_loss.item()
+                #test_horizon_loss, _ = train_loss_fn(state, params, pred_contacts, seq_embedding_batch,
+                #                                     2**FLAGS.test_horizon+1)
+                #test_horizon_loss = test_horizon_loss.item()
                 optimizer.zero_grad()
 
                 if eval_headers is None:
@@ -581,67 +580,82 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
                 last_good_params = copy.deepcopy(params)
             logger.info("Test time: {}".format(t.interval))
 
+        # convegence update
         if idx_counter >= convergence_counter:
             with Timer() as t:
-                losses = []
-                grads_torch = []
-                grads = []
-                computes = []
-                with Timer() as t2:
-                    state = make_state_fn(2**FLAGS.train_horizon+1)
-                    for j in range(FLAGS.train_horizon + 1):
-                        l, g, c = loss_and_grads(
-                            train_loss_fn, state,
-                            params, optimizer, 2**(j) + 1)
-                        if j > 0 and FLAGS.cumulative_regret:
-                            l = l + losses[j-1]
-                            g = [g1 + g2 for g1, g2 in zip(g, grads_torch[j-1])]
-                        losses.append(l)
-                        grads_torch.append(g)
-                        #grads.append([gi.cpu().numpy() for gi in g])
-                        computes.append(c)
+                for contacts, seq_embeddings, matrix_reps, seq_lens in train_generator:
+                    contacts_batch = torch.Tensor(contacts.float()).to(device)
+                    seq_embedding_batch = torch.Tensor(seq_embeddings.float()).to(device)
+                    matrix_reps_batch = torch.unsqueeze(
+                        torch.Tensor(matrix_reps.float()).to(device), -1)
+                    
+                    contact_masks = torch.Tensor(contact_map_masks(seq_lens, seq_len)).to(device)
+                    # padding the states for supervised training with all 0s
+                    state_pad = torch.zeros([matrix_reps_batch.shape[0], 
+                        seq_len, seq_len]).to(device)
 
-                    tflogger.log_scalar('train_horizon_loss_by_compute',
-                                        losses[-1],
-                                        int(compute/(2**FLAGS.test_horizon+1)))
+                    PE_batch = get_pe(seq_lens, seq_len).float().to(device)
+                    inputs_batch = (PE_batch, seq_embedding_batch, state_pad, contact_masks, contacts_batch)
 
-                    if FLAGS.drop_lr:
-                        if best_loss_so_far is None or losses[-1] <= best_loss_so_far:
-                            logger.info("Loss {} better than best {}".format(
-                                losses[-1], best_loss_so_far))
-                            best_loss_so_far = losses[-1]
-                            drop_counter = 0
-                        else:
-                            logger.info("Loss {} not better than best {}".format(
-                                losses[-1], best_loss_so_far))
-                            logger.info("Incrementing drop_counter to {}".format(
-                                drop_counter))
-                            drop_counter += 1
-                            if drop_counter >= FLAGS.drop_lr_counter_limit:
-                                drop_counter = 0
-                                best_loss_so_far = losses[-1]
-                                for pg in optimizer.param_groups:
-                                    pg['lr'] /= 2.
-                                logger.info("Dropping lr to {}".format(optimizer.param_groups[0]['lr']))
-                        tflogger.log_scalar('meta_lr_by_compute',
-                                            optimizer.param_groups[0]['lr'],
+                    losses = []
+                    grads_torch = []
+                    grads = []
+                    computes = []
+                    with Timer() as t2:
+                        state = make_state_fn(2**FLAGS.train_horizon+1)
+                        for j in range(FLAGS.train_horizon + 1):
+                            l, g, c = loss_and_grads(
+                                train_loss_fn, inputs_batch, config, state,  # train_loss_fn
+                                params, optimizer, 2**(j) + 1)
+                            if j > 0 and FLAGS.cumulative_regret:
+                                l = l + losses[j-1]
+                                g = [g1 + g2 for g1, g2 in zip(g, grads_torch[j-1])]
+                            losses.append(l)
+                            grads_torch.append(g)
+                            #grads.append([gi.cpu().numpy() for gi in g])
+                            computes.append(c)
+
+                        tflogger.log_scalar('train_horizon_loss_by_compute',
+                                            losses[-1],
                                             int(compute/(2**FLAGS.test_horizon+1)))
-                    convergence_outputs = measure_convergence(
-                        losses, grads_torch, params, telescope,
-                        weight_fn, optimizer, running_dnorm, tflogger, logger,
-                        step, max_norm, computes, compute
-                    )
-                logger.info("Convergence measurement time: {}".format(t2.interval))
-                with Timer() as t2:
-                    do_convergence_update(grads_torch, params, optimizer)
 
-                    telescope, weight_fn, running_dnorm, max_norm = (
-                        convergence_outputs
-                    )
-                    convergence_counter += 2**FLAGS.train_horizon * FLAGS.calibrate_frequency + 1
-                    if FLAGS.rt:
-                        compute = compute + sum(computes)
-                logger.info("Convergence update time: {}".format(t2.interval))
+                        if FLAGS.drop_lr:
+                            if best_loss_so_far is None or losses[-1] <= best_loss_so_far:
+                                logger.info("Loss {} better than best {}".format(
+                                    losses[-1], best_loss_so_far))
+                                best_loss_so_far = losses[-1]
+                                drop_counter = 0
+                            else:
+                                logger.info("Loss {} not better than best {}".format(
+                                    losses[-1], best_loss_so_far))
+                                logger.info("Incrementing drop_counter to {}".format(
+                                    drop_counter))
+                                drop_counter += 1
+                                if drop_counter >= FLAGS.drop_lr_counter_limit:
+                                    drop_counter = 0
+                                    best_loss_so_far = losses[-1]
+                                    for pg in optimizer.param_groups:
+                                        pg['lr'] /= 2.
+                                    logger.info("Dropping lr to {}".format(optimizer.param_groups[0]['lr']))
+                            tflogger.log_scalar('meta_lr_by_compute',
+                                                optimizer.param_groups[0]['lr'],
+                                                int(compute/(2**FLAGS.test_horizon+1)))
+                        convergence_outputs = measure_convergence(
+                            losses, grads_torch, params, telescope,
+                            weight_fn, optimizer, running_dnorm, tflogger, logger,
+                            step, max_norm, computes, compute
+                        )
+                    logger.info("Convergence measurement time: {}".format(t2.interval))
+                    with Timer() as t2:
+                        do_convergence_update(grads_torch, params, optimizer)
+
+                        telescope, weight_fn, running_dnorm, max_norm = (
+                            convergence_outputs
+                        )
+                        convergence_counter += 2**FLAGS.train_horizon * FLAGS.calibrate_frequency + 1
+                        if FLAGS.rt:
+                            compute = compute + sum(computes)
+                    logger.info("Convergence update time: {}".format(t2.interval))
             logger.info("Convergence time: {}".format(t.interval))
 
         # train
@@ -798,7 +812,7 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
                 for k in eval_headers:
                     v = test_stats[k]
                     log += ",{}".format(v)
-                log += ",{}".format(test_horizon_loss)
+                #log += ",{}".format(test_horizon_loss)
 
                 total_losses.append(total_loss)
                 total_compute.append(compute)
@@ -827,7 +841,7 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
                 # logger.info("\n")
                 if step == 0:
                     logger.info("iter,idx," + ','.join(eval_headers) +
-                                ",test_horizon_loss,total_compute,idx_counter,cost,first_param_mean")
+                                ",total_compute,idx_counter,cost,first_param_mean")
                 logger.info(log)
                 step += 1
                 for i, p in enumerate(params):

@@ -1,6 +1,7 @@
 import torch.optim as optim
 from torch.utils import data
 
+from e2efold.models import *
 from e2efold.models import ContactNetwork, ContactNetwork_test, ContactNetwork_fc
 from e2efold.models import ContactAttention, ContactAttention_simple_fix_PE
 from e2efold.models import Lag_PP_NN, RNA_SS_e2e, Lag_PP_zero, Lag_PP_perturb
@@ -8,7 +9,8 @@ from e2efold.models import Lag_PP_mixed, ContactAttention_simple
 from e2efold.common.utils import *
 from e2efold.common.config import process_config
 from e2efold.evaluation import all_test_only_e2e
-
+"""
+# get args tranferred
 args = get_args()
 
 config_file = args.config
@@ -52,7 +54,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # seed everything for reproduction
 seed_torch(0)
 
-
+#transferred
 # for loading data
 # loading the rna ss data, the data has been preprocessed
 # 5s data is just a demo data, which do not have pseudoknot, will generate another data having that
@@ -89,7 +91,8 @@ params = {'batch_size': 1,
 test_set = Dataset(test_data)
 test_generator = data.DataLoader(test_set, **params)
 
-
+#transferred
+# define the model 
 if model_type =='test_lc':
     contact_net = ContactNetwork_test(d=d, L=seq_len).to(device)
 if model_type == 'att6':
@@ -128,7 +131,7 @@ rna_ss_e2e = RNA_SS_e2e(contact_net, lag_pp_net)
 if LOAD_MODEL and os.path.isfile(e2e_model_path):
     print('Loading e2e model...')
     rna_ss_e2e.load_state_dict(torch.load(e2e_model_path))
-
+"""
         
 all_optimizer = optim.Adam(rna_ss_e2e.parameters())
 

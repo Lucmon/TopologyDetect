@@ -2,12 +2,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils import data
 from torch.nn.modules.utils import _pair
 import math
-from e2efold.common.utils import soft_sign, f1_loss, evaluate_shifted, evaluate_exact, F1_low_tri
 import numpy as np
 from scipy.sparse import diags
 
+from e2efold.common.utils import *
 
 class LocallyConnected2d(nn.Module):
     def __init__(self, in_channels, out_channels, output_size, kernel_size, stride=1, bias=False):
@@ -926,7 +927,122 @@ class RNA_SS_e2e(nn.Module):
         map_list = self.model_pp(u, seq, timesteps)
         return u, map_list
 
-def eval_fn(params, contact_net, contact_eval, lag_pp_eval, test_generator, timesteps, step):
+# get args 
+args = get_args()
+
+config_file = args.config
+
+config = process_config(config_file)
+print("#####Stage 3#####")
+print('Here is the configuration of this run: ')
+print(config)
+
+os.environ["CUDA_VISIBLE_DEVICES"]= config.gpu
+
+d = config.u_net_d
+BATCH_SIZE = config.BATCH_SIZE
+OUT_STEP = config.OUT_STEP
+LOAD_MODEL = config.LOAD_MODEL
+pp_steps = config.pp_steps
+pp_loss = config.pp_loss
+data_type = config.data_type
+model_type = config.model_type
+pp_type = '{}_s{}'.format(config.pp_model, pp_steps)
+rho_per_position = config.rho_per_position
+model_path = '../models_ckpt/supervised_{}_{}_d{}_l3_upsampling.pt'.format(model_type, data_type,d)
+pp_model_path = '../models_ckpt/lag_pp_{}_{}_{}_position_{}.pt'.format(
+    pp_type, data_type, pp_loss,rho_per_position)
+# The unrolled steps for the upsampling model is 10
+# e2e_model_path = '../models_ckpt/e2e_{}_{}_d{}_{}_{}_position_{}_upsampling.pt'.format(model_type,
+#     pp_type,d, data_type, pp_loss,rho_per_position)
+e2e_model_path = '../models_ckpt/e2e_{}_{}_d{}_{}_{}_position_{}.pt'.format(model_type,
+    pp_type,d, data_type, pp_loss,rho_per_position)
+epoches_third = config.epoches_third
+evaluate_epi = config.evaluate_epi
+step_gamma = config.step_gamma
+k = config.k
+
+# for loading data
+# loading the rna ss data, the data has been preprocessed
+# 5s data is just a demo data, which do not have pseudoknot, will generate another data having that
+from e2efold.data_generator import RNASSDataGenerator, Dataset
+import collections
+RNA_SS_data = collections.namedtuple('RNA_SS_data', 
+    'seq ss_label length name pairs')
+
+train_data = RNASSDataGenerator('../data/{}/'.format(data_type), 'train', True)
+val_data = RNASSDataGenerator('../data/{}/'.format(data_type), 'val')
+# test_data = RNASSDataGenerator('../data/{}/'.format(data_type), 'test_no_redundant')
+test_data = RNASSDataGenerator('../data/rnastralign_all/', 'test_no_redundant_600')
+
+
+seq_len = train_data.data_y.shape[-2]
+print('Max seq length ', seq_len)
+
+# using the pytorch interface to parallel the data generation and model training
+params = {'batch_size': BATCH_SIZE,
+          'shuffle': True,
+          'num_workers': 6,
+          'drop_last': True}
+train_set = Dataset(train_data)
+train_generator = data.DataLoader(train_set, **params)
+
+val_set = Dataset(val_data)
+val_generator = data.DataLoader(val_set, **params)
+
+# only for save the final results
+params = {'batch_size': 1,
+          'shuffle': False,
+          'num_workers': 6,
+          'drop_last': False}
+test_set = Dataset(test_data)
+test_generator = data.DataLoader(test_set, **params)
+
+# define the model
+
+if model_type =='test_lc':
+    contact_net = ContactNetwork_test(d=d, L=seq_len).to(device)
+if model_type == 'att6':
+    contact_net = ContactAttention(d=d, L=seq_len).to(device)
+if model_type == 'att_simple':
+    contact_net = ContactAttention_simple(d=d, L=seq_len).to(device)    
+if model_type == 'att_simple_fix':
+    contact_net = ContactAttention_simple_fix_PE(d=d, L=seq_len, 
+        device=device).to(device)
+if model_type == 'fc':
+    contact_net = ContactNetwork_fc(d=d, L=seq_len).to(device)
+if model_type == 'conv2d_fc':
+    contact_net = ContactNetwork(d=d, L=seq_len).to(device)
+
+# need to write the class for the computational graph of lang pp
+if pp_type=='nn':
+    lag_pp_net = Lag_PP_NN(pp_steps, k).to(device)
+if 'zero' in pp_type:
+    lag_pp_net = Lag_PP_zero(pp_steps, k).to(device)
+if 'perturb' in pp_type:
+    lag_pp_net = Lag_PP_perturb(pp_steps, k).to(device)
+if 'mixed'in pp_type:
+    lag_pp_net = Lag_PP_mixed(
+        , k, rho_per_position).to(device)
+
+if LOAD_MODEL and os.path.isfile(model_path):
+    print('Loading u net model...')
+    contact_net.load_state_dict(torch.load(model_path))
+if LOAD_MODEL and os.path.isfile(pp_model_path):
+    print('Loading pp model...')
+    lag_pp_net.load_state_dict(torch.load(pp_model_path))
+
+rna_ss_e2e = RNA_SS_e2e(contact_net, lag_pp_net)
+
+if LOAD_MODEL and os.path.isfile(e2e_model_path):
+    print('Loading e2e model...')
+    rna_ss_e2e.load_state_dict(torch.load(e2e_model_path))
+
+def eval_fn(params, test_generator, timesteps):
+    assign_params(rna_ss_e2e, params)
+    rna_ss_e2e.eval()
+    total_loss = 0
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     contact_net.eval()
     lag_pp_net.eval()
@@ -953,10 +1069,8 @@ def eval_fn(params, contact_net, contact_eval, lag_pp_eval, test_generator, time
 
         PE_batch = get_pe(seq_lens, contacts.shape[-1]).float().to(device)
         with torch.no_grad():
-            pred_contacts = contact_net(PE_batch, 
-                seq_embedding_batch, state_pad)
-            #a_pred_list = lag_pp_net(pred_contacts, seq_embedding_batch)
-            a_pred_list = train_net(pred_contacts, seq_embedding_batch, timesteps)
+            pred_contacts, a_pred_list = rna_ss_e2e(PE_batch, # prior
+                            seq_embedding_batch, state_pad, timesteps) # seq, state
 
         # the learning pp result
         final_pred = (a_pred_list[-1].cpu()>0.5).float()
@@ -1003,7 +1117,9 @@ def eval_fn(params, contact_net, contact_eval, lag_pp_eval, test_generator, time
         print(to_output)
     
     return {
-        'testing recall': np.average(pp_exact_r)
+        'test f1': np.average(pp_exact_f1),
+        'test precision': np.average(pp_exact_p),
+        'test recall': np.average(pp_exact_r)
     }
 
 def train_fn(state, params, inputs, config, timesteps):
