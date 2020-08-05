@@ -54,7 +54,7 @@ def target(y):    #target of argmin
 bnds = [(0, 1)]*(m*n)  # 定义域
 alpha=1
 max_iter=10000
-eps=3e-2    #可能要调，影响精度
+eps=1e-1    #可能要调，影响精度
 def g1(x,i,j):
     return x[i*n+j]*(x[i*n+j]-1)
 def g2(x,i):
