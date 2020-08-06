@@ -116,5 +116,10 @@ for t in range(max_iter):
     QList=[max(-gList[i],QList[i]+gList[i]) for i in range(len(gList))]
     x_bar=x_bar*t/(t+1)+x/(t+1)
     
-print(time.time()-start)
+print('time',time.time()-start)
 #发现：new_TT主对角线元素整体尽可能小，则收敛更快；学习率epsilon尽可能小，则精度越高且速度并不很慢（我没做几轮实验，这个说法不大科学）
+print(sum(abs(x-L)))
+xx=x.reshape([m,n])
+a=np.array([np.argmax(xx[i]) for i in range(m)])
+print(a-structure)   #理想情况应该每个元素都是0
+      
