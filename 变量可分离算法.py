@@ -4,7 +4,7 @@ import numpy as np
 import copy
 import time
 #模拟数据
-m=30
+m=50
 n=m
 inputDim=[n,m]    #每层交换机个数,3:最高层个数，6：最底层个数；因为我们的推导是从顶层向底层推，所以我把array倒过来
 D=[np.random.rand(inputDim[i+1]) for i in range(len(inputDim)-1)] #交换机个数为4、5、6的层的单个交换机延时
@@ -43,18 +43,14 @@ for i in range(m):
     L[(i*n)+structure[-1][i]]=1
 
 
+    
 
-
-def quadraticFun01(u,v):
-    def f(y):
-        return u*y+v*(y**2)#+beta*(y-ycurrent)**4
-    return opt.minimize(fun=f, x0=0.3,bounds=[(0, 1)]).x
 def target(y):    #target of argmin
     return y.T.dot(TT).dot(y)+(QList+gList).T.dot(g(y))+alpha*(np.linalg.norm(y-x))**2   
 bnds = [(0, 1)]*(m*n)  # 定义域
 alpha=1
 max_iter=10000
-eps=1e-1    #可能要调，影响精度
+eps=4e-2   #可能要调，影响精度
 def g1(x,i,j):
     return x[i*n+j]*(x[i*n+j]-1)
 def g2(x,i):
@@ -98,15 +94,11 @@ for t in range(max_iter):
             linear[i*n+j]=-(np.array(QList)[i*n+j]+np.array(gList)[i*n+j])+np.array(QList)[m*n+i]+np.array(gList)[m*n+i]+np.array(QList)[m*n+m+i*n+j]+np.array(gList)[m*n+m+i*n+j]-np.array(QList)[2*m*n+m+i]-np.array(gList)[2*m*n+m+i]-2*alpha*x[i*n+j]
     
     #求解目标是x_k1，它的每个元素只需通过求解0-1上一元二次函数获得（可能不用opt.minimize而是自己再明确地表达出quadraticFun01求解的显式表达式会加快速度）
-    x_k,x_k1=x.copy(),np.random.random(m*n)
-    for i in range(m):
-        for j in range(n):
-            x_k1[i*n+j]=quadraticFun01(x_k.dot(new_TT)[i*n+j]+new_TT.dot(x_k)[i*n+j]+linear[i*n+j]-x_k[i*n+j]/epsilon,1/2/epsilon)
+    x_k=x.copy()
+    x_k1=np.clip(x-epsilon*(2*new_TT.dot(x)+linear),0,1)
     while np.linalg.norm(x_k-x_k1)>eps:
         x_k=x_k1.copy()
-        for i in range(m):
-            for j in range(n):
-                x_k1[i*n+j]=quadraticFun01(x_k.dot(new_TT)[i*n+j]+new_TT.dot(x_k)[i*n+j]+linear[i*n+j]-x_k[i*n+j]/epsilon,1/2/epsilon)
+        x_k1=np.clip(x_k-epsilon*(2*new_TT.dot(x_k)+linear),0,1)
         print(np.linalg.norm(x_k-x_k1))
 
 
@@ -121,4 +113,3 @@ for t in range(max_iter):
     
 print(time.time()-start)
 #发现：new_TT主对角线元素整体尽可能小，则收敛更快；学习率epsilon尽可能小，则精度越高且速度并不很慢（我没做几轮实验，这个说法不大科学）
-
