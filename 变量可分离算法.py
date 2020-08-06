@@ -45,6 +45,7 @@ for i in range(m):
 
     
 
+
 def target(y):    #target of argmin
     return y.T.dot(TT).dot(y)+(QList+gList).T.dot(g(y))+alpha*(np.linalg.norm(y-x))**2   
 bnds = [(0, 1)]*(m*n)  # 定义域
@@ -83,16 +84,20 @@ for t in range(max_iter):
         print(t)
 
     #构造和要argmin的函数等价的二次项和一次项系数：new_TT和linear
-    new_TT=TT.copy()
-    for i in range(m):
-        for j in range(n):
-            new_TT[i*n+j][i*n+j]=TT[i*n+j][i*n+j]+np.array(QList)[i*n+j]+np.array(gList)[i*n+j]-(np.array(QList)[m*n+m+i*n+j]+np.array(gList)[m*n+m+i*n+j])+alpha
-    epsilon=np.linalg.norm(1/np.linalg.eigvals(new_TT)[0])/1.03     #可能要调，影响迭代次数和精度
-    linear=np.random.random([m*n])
-    for i in range(m):
-        for j in range(n):
-            linear[i*n+j]=-(np.array(QList)[i*n+j]+np.array(gList)[i*n+j])+np.array(QList)[m*n+i]+np.array(gList)[m*n+i]+np.array(QList)[m*n+m+i*n+j]+np.array(gList)[m*n+m+i*n+j]-np.array(QList)[2*m*n+m+i]-np.array(gList)[2*m*n+m+i]-2*alpha*x[i*n+j]
+    print('---',time.time())
+    dia=np.array(QList[:m*n])+np.array(gList[:m*n])-(np.array(QList)[(m*n+m):(2*m*n+m)]+np.array(gList)[(m*n+m):(2*m*n+m)])+alpha*np.ones(m*n)
+    new_TT=TT+np.diag(dia)
+    print('---',time.time())
+    epsilon= np.linalg.norm(1/np.linalg.eigvals(new_TT)[0])/1.03     #可能要调，影响迭代次数和精度
+    #print('---',epsilon)
     
+    tmp1=np.array(QList)[(m*n):(m*n+m)]+np.array(gList)[(m*n):(m*n+m)]
+    tmp2=np.array([[i]*n for i in tmp1]).reshape(m*n)
+    tmp3=np.array(QList)[-m:]+np.array(gList)[-m:]
+    tmp4=np.array([[i]*n for i in tmp3]).reshape(m*n)
+    linear=-(np.array(QList)[:m*n]+np.array(gList)[:m*n])+tmp2+np.array(QList)[(m*n+m):(2*m*n+m)]+np.array(gList)[(m*n+m):(2*m*n+m)]-tmp4-2*alpha*x
+
+
     #求解目标是x_k1，它的每个元素只需通过求解0-1上一元二次函数获得（可能不用opt.minimize而是自己再明确地表达出quadraticFun01求解的显式表达式会加快速度）
     x_k=x.copy()
     x_k1=np.clip(x-epsilon*(2*new_TT.dot(x)+linear),0,1)
