@@ -9,6 +9,7 @@ import numpy as np
 from scipy.sparse import diags
 
 from e2efold.common.utils import *
+from e2efold.common.config import process_config
 
 class LocallyConnected2d(nn.Module):
     def __init__(self, in_channels, out_channels, output_size, kernel_size, stride=1, bias=False):
@@ -38,8 +39,6 @@ class LocallyConnected2d(nn.Module):
         if self.bias is not None:
             out += self.bias
         return out
-
-
 
 class ResNetblock(nn.Module):
 
@@ -970,10 +969,10 @@ import collections
 RNA_SS_data = collections.namedtuple('RNA_SS_data', 
     'seq ss_label length name pairs')
 
-train_data = RNASSDataGenerator('../data/{}/'.format(data_type), 'train', True)
-val_data = RNASSDataGenerator('../data/{}/'.format(data_type), 'val')
+train_data = RNASSDataGenerator('/data/chenzhijie/rna/data/{}/'.format(data_type), 'train', True)
+val_data = RNASSDataGenerator('/data/chenzhijie/rna/data/{}/'.format(data_type), 'val')
 # test_data = RNASSDataGenerator('../data/{}/'.format(data_type), 'test_no_redundant')
-test_data = RNASSDataGenerator('../data/rnastralign_all/', 'test_no_redundant_600')
+test_data = RNASSDataGenerator('/d/data/chenzhijie/rna/data/rnastralign_all/', 'test_no_redundant_600')
 
 
 seq_len = train_data.data_y.shape[-2]
@@ -1022,8 +1021,7 @@ if 'zero' in pp_type:
 if 'perturb' in pp_type:
     lag_pp_net = Lag_PP_perturb(pp_steps, k).to(device)
 if 'mixed'in pp_type:
-    lag_pp_net = Lag_PP_mixed(
-        , k, rho_per_position).to(device)
+    lag_pp_net = Lag_PP_mixed(pp_steps, k, rho_per_position).to(device)
 
 if LOAD_MODEL and os.path.isfile(model_path):
     print('Loading u net model...')
