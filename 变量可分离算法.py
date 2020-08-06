@@ -84,10 +84,8 @@ for t in range(max_iter):
         print(t)
 
     #构造和要argmin的函数等价的二次项和一次项系数：new_TT和linear
-    print('---',time.time())
     dia=np.array(QList[:m*n])+np.array(gList[:m*n])-(np.array(QList)[(m*n+m):(2*m*n+m)]+np.array(gList)[(m*n+m):(2*m*n+m)])+alpha*np.ones(m*n)
     new_TT=TT+np.diag(dia)
-    print('---',time.time())
     epsilon= np.linalg.norm(1/np.linalg.eigvals(new_TT)[0])/1.03     #可能要调，影响迭代次数和精度
     #print('---',epsilon)
     
@@ -98,7 +96,7 @@ for t in range(max_iter):
     linear=-(np.array(QList)[:m*n]+np.array(gList)[:m*n])+tmp2+np.array(QList)[(m*n+m):(2*m*n+m)]+np.array(gList)[(m*n+m):(2*m*n+m)]-tmp4-2*alpha*x
 
 
-    #求解目标是x_k1，它的每个元素只需通过求解0-1上一元二次函数获得（可能不用opt.minimize而是自己再明确地表达出quadraticFun01求解的显式表达式会加快速度）
+    #求解目标是x_k1
     x_k=x.copy()
     x_k1=np.clip(x-epsilon*(2*new_TT.dot(x)+linear),0,1)
     while np.linalg.norm(x_k-x_k1)>eps:
