@@ -1,6 +1,10 @@
 import torch.optim as optim
 from torch.utils import data
 
+import collections
+RNA_SS_data = collections.namedtuple('RNA_SS_data', 
+    'seq ss_label length name pairs')
+
 from e2efold.models import *
 from e2efold.models import ContactNetwork, ContactNetwork_test, ContactNetwork_fc
 from e2efold.models import ContactAttention, ContactAttention_simple_fix_PE
@@ -9,6 +13,8 @@ from e2efold.models import Lag_PP_mixed, ContactAttention_simple
 from e2efold.common.utils import *
 from e2efold.common.config import process_config
 from e2efold.evaluation import all_test_only_e2e
+
+import e2efold.randomized_telescope_runner as runner
 """
 # get args tranferred
 args = get_args()
@@ -132,7 +138,8 @@ if LOAD_MODEL and os.path.isfile(e2e_model_path):
     print('Loading e2e model...')
     rna_ss_e2e.load_state_dict(torch.load(e2e_model_path))
 """
-        
+
+
 all_optimizer = optim.Adam(rna_ss_e2e.parameters())
 
 # for 5s

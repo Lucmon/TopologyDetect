@@ -25,9 +25,12 @@ class RNASSDataGenerator(object):
         data_dir = self.data_dir
         # Load the current split
         RNA_SS_data = collections.namedtuple('RNA_SS_data', 
-            'seq ss_label length name pairs')
+                    'seq ss_label length name pairs')
+        print(self.data_dir)
+        print(self.split)
         with open(os.path.join(data_dir, '%s.pickle' % self.split), 'rb') as f:
             self.data = cPickle.load(f)
+
         if self.upsampling:
             self.data = self.upsampling_data()
         self.data_x = np.array([instance[0] for instance in self.data])

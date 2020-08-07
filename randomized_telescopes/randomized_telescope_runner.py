@@ -14,7 +14,7 @@ from tensorboard_logger import Logger as TFLogger
 import optimize_sampling_greedy
 import optimize_sampling_greedy_roulette
 
-from timer import Timer
+from e2efold.common.timer import Timer
 
 from setproctitle import setproctitle
 

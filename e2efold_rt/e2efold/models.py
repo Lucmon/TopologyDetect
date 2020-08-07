@@ -937,6 +937,7 @@ print('Here is the configuration of this run: ')
 print(config)
 
 os.environ["CUDA_VISIBLE_DEVICES"]= config.gpu
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 d = config.u_net_d
 BATCH_SIZE = config.BATCH_SIZE
@@ -969,11 +970,12 @@ import collections
 RNA_SS_data = collections.namedtuple('RNA_SS_data', 
     'seq ss_label length name pairs')
 
-train_data = RNASSDataGenerator('/data/chenzhijie/rna/data/{}/'.format(data_type), 'train', True)
-val_data = RNASSDataGenerator('/data/chenzhijie/rna/data/{}/'.format(data_type), 'val')
+#train_data = RNASSDataGenerator('/data/chenzhijie/rna/data/{}/'.format(data_type), 'train', True)
+#val_data = RNASSDataGenerator('/data/chenzhijie/rna/data/{}/'.format(data_type), 'val')
 # test_data = RNASSDataGenerator('../data/{}/'.format(data_type), 'test_no_redundant')
-test_data = RNASSDataGenerator('/d/data/chenzhijie/rna/data/rnastralign_all/', 'test_no_redundant_600')
-
+test_data = RNASSDataGenerator('/data/chenzhijie/rna/data/rnastralign_all/', 'test_no_redundant_600')
+train_data = test_data
+val_data = test_data
 
 seq_len = train_data.data_y.shape[-2]
 print('Max seq length ', seq_len)
@@ -1035,6 +1037,25 @@ rna_ss_e2e = RNA_SS_e2e(contact_net, lag_pp_net)
 if LOAD_MODEL and os.path.isfile(e2e_model_path):
     print('Loading e2e model...')
     rna_ss_e2e.load_state_dict(torch.load(e2e_model_path))
+
+def assign_params(model, params):
+    # pdb.set_trace()
+    static_named_parameters = []
+    for n_and_p in model.named_parameters():
+        static_named_parameters.append(n_and_p)
+    for name_and_param, new_param in zip(
+            static_named_parameters, params):
+        name, old_param = name_and_param
+        if name == 'encoder.weight' and FLAGS.tied:
+            setattr(model.decoder, 'weight', new_param)
+        if name == 'decoder.weight' and FLAGS.tied:
+            pdb.set_trace()
+        module = model
+        while len(name.split('.')) > 1:
+            component_name = name.split('.')[0]
+            module = getattr(module, component_name)
+            name = '.'.join(name.split('.')[1:])
+        setattr(module, name, new_param)
 
 def eval_fn(params, test_generator, timesteps):
     assign_params(rna_ss_e2e, params)

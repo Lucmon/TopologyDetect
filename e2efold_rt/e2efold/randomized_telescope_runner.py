@@ -6,15 +6,15 @@ import torch
 from tensorflow import flags
 import logging
 import os
-from randomized_telescope import GeometricRandomizedTelescope, ShuffleRandomizedTelescope
-from adaptive_randomized_telescope import NoTelescope, CollapsedFixedTelescope
+from e2efold.randomized_telescope import GeometricRandomizedTelescope, ShuffleRandomizedTelescope
+from e2efold.adaptive_randomized_telescope import NoTelescope, CollapsedFixedTelescope
 import pdb
 import random
-from tensorboard_logger import Logger as TFLogger
-import optimize_sampling_greedy
-import optimize_sampling_greedy_roulette
+from e2efold.common.tensorboard_logger import Logger as TFLogger
+from e2efold.common import optimize_sampling_greedy
+from e2efold.common import optimize_sampling_greedy_roulette
 
-from timer import Timer
+from e2efold.common.timer import Timer
 
 from setproctitle import setproctitle
 
@@ -82,6 +82,21 @@ flags.DEFINE_float('variance_weight', 1.0, 'Controls weight on variance '
 
 flags.DEFINE_boolean('use_tflogger', True, 'Use tflogger')
 
+flags.DEFINE_boolean('c', False, 'config.json for e2efold. DO NOT CHANGE.')
+
+flags.DEFINE_integer('seed', 0, 'Random seed for numpy, pytorch and random')
+
+flags.DEFINE_integer('budget', 2000, 'multiple of test_horizon we run for')
+
+flags.DEFINE_integer('train_horizon', 9, 'truncated horizon of problem')
+flags.DEFINE_integer('test_horizon', 9, 'full horizon of problem')
+flags.DEFINE_integer('test_frequency', None, 'test freq')
+flags.DEFINE_integer('calibrate_frequency', 5, 'calibrate freq')
+flags.DEFINE_boolean('compute_penalty', True, 'penalize RT due to multiple '
+                     'computations required')
+flags.DEFINE_string('optimizer', 'sgd', 'sgd adam or mom')
+flags.DEFINE_float('momentum', 0.9, 'momentum for SGD')
+flags.DEFINE_float('meta_lr', None, 'meta-optimization learning rate')
 
 def clip_by_norm(array, norm):
     if isinstance(array, list):
@@ -349,7 +364,7 @@ def make_telescope_and_weight():
 def loss_and_grads(loss_fn, inputs_batch, config, state, params, optimizer, i):
     optimizer.zero_grad()
     #loss, compute = loss_fn(state, params, i)
-    loss, compute = loss_fn(state, params, inputs_batch, config, i)                                                     )
+    loss, compute = loss_fn(state, params, inputs_batch, config, i)
     loss.backward()
     grads = []
     for p in params:
@@ -449,6 +464,16 @@ def do_convergence_update(grads_torch, params, optimizer):
     optimizer.step()
 
 
+def make_problem():
+        # Set lr to be optimal val from grid search
+    if FLAGS.meta_lr is None:
+        if FLAGS.optimizer == 'sgd':
+            FLAGS.meta_lr = 1e-2
+        elif FLAGS.optimizer == 'mom':
+            FLAGS.meta_lr = 3e-3
+        elif FLAGS.optimizer == 'adam':
+            FLAGS.meta_lr = 3e-2
+
 def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
     setproctitle(FLAGS.name)
 
@@ -462,6 +487,8 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
     #    FLAGS.meta_lr = FLAGS.meta_lr * FLAGS.variance_weight
     #if FLAGS.rt:
     #    `FLAGS.meta_lr = FLAGS.meta_lr / 2.0
+
+    make_problem()
 
     if FLAGS.optimizer == 'adam':
         optimizer = torch.optim.Adam(params, lr=FLAGS.meta_lr,
