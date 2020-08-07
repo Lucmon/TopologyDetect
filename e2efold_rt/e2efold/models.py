@@ -439,7 +439,7 @@ class Lag_PP_NN(nn.Module):
             self.rho_conv_list.append(rho_conv_tmp)
             self.lmbd_conv_list.append(lmbd_conv_tmp)
 
-    def forward(self, u, x):
+    def forward(self, u, x, timesteps):
         a_t_list = list()
         a_hat_t_list = list()
         lmbd_t_list = list()
@@ -457,7 +457,7 @@ class Lag_PP_NN(nn.Module):
         a_t_list.append(a_tmp)
         a_hat_t_list.append(a_hat_tmp)
         # gradient descent
-        for t in range(self.steps):
+        for t in range(timesteps):
             lmbd_updated, a_updated, a_hat_updated = self.update_rule_fc(
                 u, m, lmbd_tmp, a_tmp, a_hat_tmp, t)
 
@@ -580,7 +580,7 @@ class Lag_PP_zero(nn.Module):
         self.beta = 0.1
         self.lr_decay = 0.99
 
-    def forward(self, u, x):
+    def forward(self, u, x, timesteps):
         a_t_list = list()
         a_hat_t_list = list()
         lmbd_t_list = list()
@@ -598,7 +598,7 @@ class Lag_PP_zero(nn.Module):
         a_t_list.append(a_tmp)
         a_hat_t_list.append(a_hat_tmp)
         # gradient descent
-        for t in range(self.steps):
+        for t in range(timesteps):
             lmbd_updated, a_updated, a_hat_updated = self.update_rule(
                 u, m, lmbd_tmp, a_tmp, a_hat_tmp, t)
 
@@ -673,7 +673,7 @@ class Lag_PP_perturb(Lag_PP_zero):
             i)])) for i in range(steps)])
         
 
-    def forward(self, u, x):
+    def forward(self, u, x, timesteps):
         a_t_list = list()
         a_hat_t_list = list()
         lmbd_t_list = list()
@@ -691,7 +691,7 @@ class Lag_PP_perturb(Lag_PP_zero):
         a_t_list.append(a_tmp)
         a_hat_t_list.append(a_hat_tmp)
         # gradient descent
-        for t in range(self.steps):
+        for t in range(timesteps):
             lmbd_updated, a_updated, a_hat_updated = self.update_rule(
                 u, m, lmbd_tmp, a_tmp, a_hat_tmp, t)
 
@@ -770,7 +770,7 @@ class Lag_PP_mixed(Lag_PP_zero):
             nn.ReLU()
             )
 
-    def forward(self, u, x):
+    def forward(self, u, x, timesteps):
         a_t_list = list()
         a_hat_t_list = list()
         lmbd_t_list = list()
@@ -788,7 +788,7 @@ class Lag_PP_mixed(Lag_PP_zero):
         a_t_list.append(a_tmp)
         a_hat_t_list.append(a_hat_tmp)
         # gradient descent
-        for t in range(self.steps):
+        for t in range(timesteps):
             lmbd_updated, a_updated, a_hat_updated = self.update_rule(
                 u, m, lmbd_tmp, a_tmp, a_hat_tmp, t)
 
@@ -921,7 +921,7 @@ class RNA_SS_e2e(nn.Module):
         self.model_att = model_att
         self.model_pp = model_pp
         
-    def forward(self, prior, seq, state):
+    def forward(self, prior, seq, state, timesteps):
         u = self.model_att(prior, seq, state)
         map_list = self.model_pp(u, seq, timesteps)
         return u, map_list
@@ -1039,23 +1039,8 @@ if LOAD_MODEL and os.path.isfile(e2e_model_path):
     rna_ss_e2e.load_state_dict(torch.load(e2e_model_path))
 
 def assign_params(model, params):
-    # pdb.set_trace()
-    static_named_parameters = []
-    for n_and_p in model.named_parameters():
-        static_named_parameters.append(n_and_p)
-    for name_and_param, new_param in zip(
-            static_named_parameters, params):
-        name, old_param = name_and_param
-        if name == 'encoder.weight' and FLAGS.tied:
-            setattr(model.decoder, 'weight', new_param)
-        if name == 'decoder.weight' and FLAGS.tied:
-            pdb.set_trace()
-        module = model
-        while len(name.split('.')) > 1:
-            component_name = name.split('.')[0]
-            module = getattr(module, component_name)
-            name = '.'.join(name.split('.')[1:])
-        setattr(module, name, new_param)
+    for p, param in zip(model.parameters(), params):
+        p.data = param
 
 def eval_fn(params, test_generator, timesteps):
     assign_params(rna_ss_e2e, params)
