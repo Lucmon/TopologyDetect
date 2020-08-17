@@ -11,6 +11,10 @@ from scipy.sparse import diags
 from e2efold.common.utils import *
 from e2efold.common.config import process_config
 
+import resource
+rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (2048, rlimit[1]))
+
 class LocallyConnected2d(nn.Module):
     def __init__(self, in_channels, out_channels, output_size, kernel_size, stride=1, bias=False):
         super(LocallyConnected2d, self).__init__()
@@ -231,7 +235,7 @@ class ContactAttention_simple(nn.Module):
 
 class ContactAttention_simple_fix_PE(ContactAttention_simple):
     """docstring for ContactAttention_simple_fix_PE"""
-    def __init__(self, d, L, device):
+    def __init__(self, d, L):
         super(ContactAttention_simple_fix_PE, self).__init__(d, L)
         self.PE_net = nn.Sequential(
             nn.Linear(111,5*d),
@@ -285,7 +289,7 @@ class ContactAttention_fix_em(nn.Module):
     """
     def __init__(self, d, L):
         super(ContactAttention_fix_em, self).__init__()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # self.device = torch.device("cuda:"+config.gpu if torch.cuda.is_available() else "cpu")
         self.d = d
         self.L = L
         # 1d convolution, L*3 to L*d
@@ -296,13 +300,12 @@ class ContactAttention_fix_em(nn.Module):
             kernel_size=9, padding=8, dilation=2)
         self.bn2 = nn.BatchNorm1d(d)
 
-        self.fix_pos_em_1d = torch.Tensor(np.arange(1,L+1)/np.float(L)).view(1,1,L).to(
-            self.device)
+        self.fix_pos_em_1d = torch.Tensor(np.arange(1,L+1)/np.float(L)).view(1,1,L).cuda()
 
         pos_j, pos_i = np.meshgrid(np.arange(1,L+1)/np.float(L), 
             np.arange(1,L+1)/np.float(L))
         self.fix_pos_em_2d = torch.cat([torch.Tensor(pos_i).unsqueeze(0), 
-            torch.Tensor(pos_j).unsqueeze(0)], 0).unsqueeze(0).to(self.device)
+            torch.Tensor(pos_j).unsqueeze(0)], 0).unsqueeze(0).cuda()
 
         # transformer encoder for the input sequences
         self.encoder_layer = nn.TransformerEncoderLayer(d+1, 2)
@@ -570,7 +573,7 @@ class Lag_PP_zero(nn.Module):
     """
     def __init__(self, steps, k):
         super(Lag_PP_zero, self).__init__()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #self.device = torch.device("cuda:"+config.gpu if torch.cuda.is_available() else "cpu")
         self.steps = steps
         # the parameter for the soft sign
         self.k = k
@@ -648,7 +651,7 @@ class Lag_PP_zero(nn.Module):
 
         mask = diags([1]*7, [-3, -2, -1, 0, 1, 2, 3], 
             shape=(m.shape[-2], m.shape[-1])).toarray()
-        m = m.masked_fill(torch.Tensor(mask).bool().to(self.device), 0)
+        m = m.masked_fill(torch.Tensor(mask).bool().cuda(), 0)#.to(self.device), 0)
         return m
     
     def contact_a(self, a_hat, m):
@@ -731,7 +734,7 @@ class Lag_PP_mixed(Lag_PP_zero):
     """
     def __init__(self, steps, k, rho_mode='fix'):
         super(Lag_PP_mixed, self).__init__(steps, k)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #self.device = torch.device("cuda:"+config.gpu if torch.cuda.is_available() else "cpu")
         self.steps = steps
         self.k = k
         # self.s = nn.Parameter(torch.ones(600, 600)*math.log(9.0))
@@ -761,7 +764,7 @@ class Lag_PP_mixed(Lag_PP_zero):
         pos_j, pos_i = np.meshgrid(np.arange(1,600+1)/600.0, 
             np.arange(1,600+1)/600.0)
         self.rho_pos_fea = torch.cat([torch.Tensor(pos_i).unsqueeze(-1), 
-            torch.Tensor(pos_j).unsqueeze(-1)], -1).view(-1, 2).to(self.device)
+            torch.Tensor(pos_j).unsqueeze(-1)], -1).view(-1, 2).cuda()#.to(self.device)
 
         self.rho_pos_net = nn.Sequential(
             nn.Linear(2, 4),
@@ -846,7 +849,7 @@ class Lag_PP_final(Lag_PP_zero):
     """
     def __init__(self, steps, k, rho_mode='fix'):
         super(Lag_PP_final, self).__init__(steps, k)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #self.device = torch.device("cuda:"+config.gpu if torch.cuda.is_available() else "cpu")
         self.steps = steps
         self.k = k
         self.s = nn.Parameter(torch.Tensor([math.log(9.0)]))
@@ -937,7 +940,8 @@ print('Here is the configuration of this run: ')
 print(config)
 
 os.environ["CUDA_VISIBLE_DEVICES"]= config.gpu
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#device = torch.device("cuda:"+config.gpu if torch.cuda.is_available() else "cpu")
+# print("gpu config "+config.gpu)
 
 d = config.u_net_d
 BATCH_SIZE = config.BATCH_SIZE
@@ -983,7 +987,7 @@ print('Max seq length ', seq_len)
 # using the pytorch interface to parallel the data generation and model training
 params = {'batch_size': BATCH_SIZE,
           'shuffle': True,
-          'num_workers': 6,
+          'num_workers': 1,
           'drop_last': True}
 train_set = Dataset(train_data)
 train_generator = data.DataLoader(train_set, **params)
@@ -991,10 +995,14 @@ train_generator = data.DataLoader(train_set, **params)
 val_set = Dataset(val_data)
 val_generator = data.DataLoader(val_set, **params)
 
+#test_set = Dataset(test_data)
+#test_generator = data.DataLoader(test_set, **params)
+
 # only for save the final results
+
 params = {'batch_size': 1,
           'shuffle': False,
-          'num_workers': 6,
+          'num_workers': 1,
           'drop_last': False}
 test_set = Dataset(test_data)
 test_generator = data.DataLoader(test_set, **params)
@@ -1002,28 +1010,27 @@ test_generator = data.DataLoader(test_set, **params)
 # define the model
 
 if model_type =='test_lc':
-    contact_net = ContactNetwork_test(d=d, L=seq_len).to(device)
+    contact_net = ContactNetwork_test(d=d, L=seq_len).cuda()#.to(device)
 if model_type == 'att6':
-    contact_net = ContactAttention(d=d, L=seq_len).to(device)
+    contact_net = ContactAttention(d=d, L=seq_len).cuda()#.to(device)
 if model_type == 'att_simple':
-    contact_net = ContactAttention_simple(d=d, L=seq_len).to(device)    
+    contact_net = ContactAttention_simple(d=d, L=seq_len).cuda()#.to(device)    
 if model_type == 'att_simple_fix':
-    contact_net = ContactAttention_simple_fix_PE(d=d, L=seq_len, 
-        device=device).to(device)
+    contact_net = ContactAttention_simple_fix_PE(d=d, L=seq_len).cuda()#.to(device)
 if model_type == 'fc':
-    contact_net = ContactNetwork_fc(d=d, L=seq_len).to(device)
+    contact_net = ContactNetwork_fc(d=d, L=seq_len).cuda()#.to(device)
 if model_type == 'conv2d_fc':
-    contact_net = ContactNetwork(d=d, L=seq_len).to(device)
+    contact_net = ContactNetwork(d=d, L=seq_len).cuda()#.to(device)
 
 # need to write the class for the computational graph of lang pp
 if pp_type=='nn':
-    lag_pp_net = Lag_PP_NN(pp_steps, k).to(device)
+    lag_pp_net = Lag_PP_NN(pp_steps, k).cuda()#.to(device)
 if 'zero' in pp_type:
-    lag_pp_net = Lag_PP_zero(pp_steps, k).to(device)
+    lag_pp_net = Lag_PP_zero(pp_steps, k).cuda()#.to(device)
 if 'perturb' in pp_type:
-    lag_pp_net = Lag_PP_perturb(pp_steps, k).to(device)
+    lag_pp_net = Lag_PP_perturb(pp_steps, k).cuda()#.to(device)
 if 'mixed'in pp_type:
-    lag_pp_net = Lag_PP_mixed(pp_steps, k, rho_per_position).to(device)
+    lag_pp_net = Lag_PP_mixed(pp_steps, k, rho_per_position).cuda()#.to(device)
 
 if LOAD_MODEL and os.path.isfile(model_path):
     print('Loading u net model...')
@@ -1039,17 +1046,36 @@ if LOAD_MODEL and os.path.isfile(e2e_model_path):
     rna_ss_e2e.load_state_dict(torch.load(e2e_model_path))
 
 def assign_params(model, params):
-    for p, param in zip(model.parameters(), params):
-        p.data = param
+    static_named_parameters = []
+    for n_and_p in model.named_parameters():
+        static_named_parameters.append(n_and_p)
+    for name_and_param, new_param in zip(
+            static_named_parameters, params):
+        name, old_param = name_and_param
+        print(name)
+        pass
+        if 'model_att' in name:
+            setattr(model.model_att, 'weight', new_param)
+        if name == 'encoder.weight' and FLAGS.tied:
+            setattr(model.decoder, 'weight', new_param)
+        if name == 'decoder.weight' and FLAGS.tied:
+            pdb.set_trace()
+        module = model
+        while len(name.split('.')) > 1:
+            component_name = name.split('.')[0]
+            module = getattr(module, component_name)
+            name = '.'.join(name.split('.')[1:])
+        setattr(module, name, new_param)
+    sys.exit()
 
 def eval_fn(params, test_generator, timesteps):
     assign_params(rna_ss_e2e, params)
     rna_ss_e2e.eval()
     total_loss = 0
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    contact_net.eval()
-    lag_pp_net.eval()
+    device = torch.device("cuda:"+config.gpu if torch.cuda.is_available() else "cpu")
+    #contact_net.eval()
+    #lag_pp_net.eval()
     result_no_train = list()
     result_no_train_shift = list()
     result_pp = list()
@@ -1061,17 +1087,19 @@ def eval_fn(params, test_generator, timesteps):
 
     batch_n = 0
     for contacts, seq_embeddings, matrix_reps, seq_lens in test_generator:
+        if batch_n == 20:
+            break
         if batch_n %10==0:
             print('Batch number: ', batch_n)
         batch_n += 1
-        contacts_batch = torch.Tensor(contacts.float()).to(device)
-        seq_embedding_batch = torch.Tensor(seq_embeddings.float()).to(device)
+        contacts_batch = torch.Tensor(contacts.float()).cuda()#.to(device)
+        seq_embedding_batch = torch.Tensor(seq_embeddings.float()).cuda()#.to(device)
         matrix_reps_batch = torch.unsqueeze(
-            torch.Tensor(matrix_reps.float()).to(device), -1)
+            torch.Tensor(matrix_reps.float()).cuda(), -1)
 
-        state_pad = torch.zeros(contacts.shape).to(device)
+        state_pad = torch.zeros(contacts.shape).cuda()#.to(device)
 
-        PE_batch = get_pe(seq_lens, contacts.shape[-1]).float().to(device)
+        PE_batch = get_pe(seq_lens, contacts.shape[-1]).float().cuda()#.to(device)
         with torch.no_grad():
             pred_contacts, a_pred_list = rna_ss_e2e(PE_batch, # prior
                             seq_embedding_batch, state_pad, timesteps) # seq, state
@@ -1091,7 +1119,6 @@ def eval_fn(params, test_generator, timesteps):
         f1_pp += f1_tmp
         seq_lens_list += list(seq_lens)
 
-
     pp_exact_p,pp_exact_r,pp_exact_f1 = zip(*result_pp)
     pp_shift_p,pp_shift_r,pp_shift_f1 = zip(*result_pp_shift)  
     print('Average testing F1 score with learning post-processing: ', np.average(pp_exact_f1))
@@ -1104,9 +1131,9 @@ def eval_fn(params, test_generator, timesteps):
     print('Average testing recall with learning post-processing allow shift: ', np.average(pp_shift_r))
 
     e2e_result_df = pd.DataFrame()
-    e2e_result_df['name'] = [a.name for a in test_data.data]
-    e2e_result_df['type'] = list(map(lambda x: x.split('/')[2], [a.name for a in test_data.data]))
-    e2e_result_df['seq_lens'] = list(map(lambda x: x.numpy(), seq_lens_list))
+    e2e_result_df['name'] = [a.name for a in test_data.data[:20]]
+    e2e_result_df['type'] = list(map(lambda x: x.split('/')[2], [a.name for a in test_data.data[:20]]))
+    #e2e_result_df['seq_lens'] = list(map(lambda x: x.numpy(), seq_lens_list))
     e2e_result_df['exact_p'] = pp_exact_p
     e2e_result_df['exact_r'] = pp_exact_r
     e2e_result_df['exact_f1'] = pp_exact_f1
@@ -1126,31 +1153,33 @@ def eval_fn(params, test_generator, timesteps):
         'test recall': np.average(pp_exact_r)
     }
 
+
+from torch.autograd import Variable
 def train_fn(state, params, inputs, config, timesteps):
     PE_batch, seq_embedding_batch, state_pad, contact_masks, contacts_batch = inputs  # retrieve inputs
-    assign_parmas(rna_ss_e2e, params) # restore the model
+    assign_params(rna_ss_e2e, params) # restore the model
 
     rna_ss_e2e.train()
     pred_contacts, a_pred_list = rna_ss_e2e(PE_batch, # prior
             seq_embedding_batch, state_pad, timesteps) # seq, state
 
-    avg_loss = test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config)
+    avg_loss = test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config, timesteps)
 
     compute = timesteps
     return avg_loss, compute
 
-pos_weight = torch.Tensor([300]).to(device)
+pos_weight = torch.Tensor([300]).cuda()#.to(device)
 criterion_bce_weighted = torch.nn.BCEWithLogitsLoss(
     pos_weight = pos_weight)
 criterion_mse = torch.nn.MSELoss(reduction='sum')
 
-def test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config): 
-    pp_steps = config.pp_steps
+def test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config, timesteps): 
+    #pp_steps = config.pp_steps
+    pp_steps = timesteps
     pp_loss = config.pp_loss
     step_gamma = config.step_gamma
 
     loss_u = criterion_bce_weighted(pred_contacts*contact_masks, contacts_batch)
-
     # Compute loss, consider the intermidate output
     if pp_loss == "l2":
         loss_a = criterion_mse(

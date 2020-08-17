@@ -145,10 +145,10 @@ all_optimizer = optim.Adam(rna_ss_e2e.parameters())
 # for 5s
 # pos_weight = torch.Tensor([100]).to(device)
 # for length as 600
-pos_weight = torch.Tensor([300]).to(device)
-criterion_bce_weighted = torch.nn.BCEWithLogitsLoss(
-    pos_weight = pos_weight)
-criterion_mse = torch.nn.MSELoss(reduction='sum')
+# pos_weight = torch.Tensor([300]).to(device)
+# criterion_bce_weighted = torch.nn.BCEWithLogitsLoss(
+#     pos_weight = pos_weight)
+# criterion_mse = torch.nn.MSELoss(reduction='sum')
 
 
 def per_family_evaluation():

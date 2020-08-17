@@ -13,10 +13,13 @@ import random
 from e2efold.common.tensorboard_logger import Logger as TFLogger
 from e2efold.common import optimize_sampling_greedy
 from e2efold.common import optimize_sampling_greedy_roulette
+from e2efold.common.utils import *
 
 from e2efold.common.timer import Timer
 
 from setproctitle import setproctitle
+
+from e2efold.models import *
 
 import io
 import math
@@ -24,6 +27,7 @@ import time
 
 import copy
 FLAGS = flags.FLAGS
+os.environ["CUDA_VISIBLE_DEVICES"]= config.gpu
 
 # Toggle these
 flags.DEFINE_boolean('rt', True, 'use randomized telescope')
@@ -368,6 +372,9 @@ def loss_and_grads(loss_fn, inputs_batch, config, state, params, optimizer, i):
     loss.backward()
     grads = []
     for p in params:
+        if p.grad is not None:
+            print(p.data, p.grad)
+    for p in params:
         g = p.grad.clone().detach()
         clip_non_finite_torch(g)
         grads.append(g)
@@ -611,17 +618,17 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
         if idx_counter >= convergence_counter:
             with Timer() as t:
                 for contacts, seq_embeddings, matrix_reps, seq_lens in train_generator:
-                    contacts_batch = torch.Tensor(contacts.float()).to(device)
-                    seq_embedding_batch = torch.Tensor(seq_embeddings.float()).to(device)
+                    contacts_batch = torch.Tensor(contacts.float()).cuda()#.to(device)
+                    seq_embedding_batch = torch.Tensor(seq_embeddings.float()).cuda()#.to(device)
                     matrix_reps_batch = torch.unsqueeze(
-                        torch.Tensor(matrix_reps.float()).to(device), -1)
+                        torch.Tensor(matrix_reps.float()).cuda(),-1)#.to(device), -1)
                     
-                    contact_masks = torch.Tensor(contact_map_masks(seq_lens, seq_len)).to(device)
+                    contact_masks = torch.Tensor(contact_map_masks(seq_lens, seq_len)).cuda()#.to(device)
                     # padding the states for supervised training with all 0s
                     state_pad = torch.zeros([matrix_reps_batch.shape[0], 
-                        seq_len, seq_len]).to(device)
+                        seq_len, seq_len]).cuda()#.to(device)
 
-                    PE_batch = get_pe(seq_lens, seq_len).float().to(device)
+                    PE_batch = get_pe(seq_lens, seq_len).float().cuda()#.to(device)
                     inputs_batch = (PE_batch, seq_embedding_batch, state_pad, contact_masks, contacts_batch)
 
                     losses = []
@@ -688,17 +695,17 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
         # train
         with Timer() as t:
             for contacts, seq_embeddings, matrix_reps, seq_lens in train_generator:
-                contacts_batch = torch.Tensor(contacts.float()).to(device)
-                seq_embedding_batch = torch.Tensor(seq_embeddings.float()).to(device)
+                contacts_batch = torch.Tensor(contacts.float()).cuda()#.to(device)
+                seq_embedding_batch = torch.Tensor(seq_embeddings.float()).cuda()#.to(device)
                 matrix_reps_batch = torch.unsqueeze(
-                    torch.Tensor(matrix_reps.float()).to(device), -1)
+                    torch.Tensor(matrix_reps.float()).cuda(), -1)#.to(device), -1)
                 
-                contact_masks = torch.Tensor(contact_map_masks(seq_lens, seq_len)).to(device)
+                contact_masks = torch.Tensor(contact_map_masks(seq_lens, seq_len)).cuda()#.to(device)
                 # padding the states for supervised training with all 0s
                 state_pad = torch.zeros([matrix_reps_batch.shape[0], 
-                    seq_len, seq_len]).to(device)
+                    seq_len, seq_len]).cuda()#.to(device)
 
-                PE_batch = get_pe(seq_lens, seq_len).float().to(device)
+                PE_batch = get_pe(seq_lens, seq_len).float().cuda()#.to(device)
                 inputs_batch = (PE_batch, seq_embedding_batch, state_pad, contact_masks, contacts_batch)
 
                 log = str(step)
