@@ -250,7 +250,9 @@ class ContactAttention_simple_fix_PE(ContactAttention_simple):
         prior: L*L*1
         seq: L*4
         state: L*L
-        """
+        """        
+        #for tup in self.PE_net.state_dict():
+        #    print(tup[0], self.PE_net.state_dict()[tup].size())
         position_embeds = self.PE_net(pe.view(-1, 111)).view(-1, self.L, self.d) # N*L*111 -> N*L*d
         position_embeds = position_embeds.permute(0, 2, 1) # N*d*L
         seq = seq.permute(0, 2, 1) # 4*L
@@ -977,7 +979,7 @@ RNA_SS_data = collections.namedtuple('RNA_SS_data',
 #train_data = RNASSDataGenerator('/data/chenzhijie/rna/data/{}/'.format(data_type), 'train', True)
 #val_data = RNASSDataGenerator('/data/chenzhijie/rna/data/{}/'.format(data_type), 'val')
 # test_data = RNASSDataGenerator('../data/{}/'.format(data_type), 'test_no_redundant')
-test_data = RNASSDataGenerator('/data/chenzhijie/rna/data/rnastralign_all/', 'test_no_redundant_600')
+test_data = RNASSDataGenerator('/mnt/Datawarehouse/chenzhijie2/data/rnastralign_all/', 'test_no_redundant_600')
 train_data = test_data
 val_data = test_data
 
@@ -1008,7 +1010,9 @@ test_set = Dataset(test_data)
 test_generator = data.DataLoader(test_set, **params)
 
 # define the model
-
+print("—---------------------")
+print(model_type)
+print("----------------------")
 if model_type =='test_lc':
     contact_net = ContactNetwork_test(d=d, L=seq_len).cuda()#.to(device)
 if model_type == 'att6':
@@ -1052,23 +1056,37 @@ def assign_params(model, params):
     for name_and_param, new_param in zip(
             static_named_parameters, params):
         name, old_param = name_and_param
-        print(name)
-        pass
-        if 'model_att' in name:
-            setattr(model.model_att, 'weight', new_param)
-        if name == 'encoder.weight' and FLAGS.tied:
-            setattr(model.decoder, 'weight', new_param)
-        if name == 'decoder.weight' and FLAGS.tied:
-            pdb.set_trace()
+        #if 'model_att' in name:
+        #    setattr(model.model_att, 'weight', new_param)
+        #if name == 'encoder.weight' and FLAGS.tied:
+        #    setattr(model.decoder, 'weight', new_param)
+        #if name == 'decoder.weight' and FLAGS.tied:
+        #    pdb.set_trace()
         module = model
         while len(name.split('.')) > 1:
             component_name = name.split('.')[0]
             module = getattr(module, component_name)
             name = '.'.join(name.split('.')[1:])
+        #print("--------------")
+        assert(old_param.size() == new_param.size())
+        #if (old_param.size() != new_param.size()):
+        #with open("output.txt", "a") as txt_file:
+        #    txt_file.write(str(module) + " " + name + " " + \
+        #         str(old_param.size()) + " " + str(new_param.size()) + "\n")
+        #print(module, name, old_param.size(), new_param.size())
         setattr(module, name, new_param)
-    sys.exit()
+    with open("output_model_name.txt", "a") as txt_file:
+        for name_and_param in static_named_parameters:
+            name, old_param = name_and_param
+            txt_file.write(name + "\n" + str(old_param.data.size()) + "\n")
+
 
 def eval_fn(params, test_generator, timesteps):
+    #for param in params:
+    #    print(param.shape)
+    print("*******************")
+    print("Evaluating...")
+    print("*******************")
     assign_params(rna_ss_e2e, params)
     rna_ss_e2e.eval()
     total_loss = 0
@@ -1155,17 +1173,37 @@ def eval_fn(params, test_generator, timesteps):
 
 
 from torch.autograd import Variable
-def train_fn(state, params, inputs, config, timesteps):
+def train_fn(state, params, inputs, config, timesteps, steps_done):
+    print("steps:{}".format(timesteps))
     PE_batch, seq_embedding_batch, state_pad, contact_masks, contacts_batch = inputs  # retrieve inputs
+    #for param in params:
+    #    print(param.shape)
     assign_params(rna_ss_e2e, params) # restore the model
 
     rna_ss_e2e.train()
+
     pred_contacts, a_pred_list = rna_ss_e2e(PE_batch, # prior
             seq_embedding_batch, state_pad, timesteps) # seq, state
 
-    avg_loss = test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config, timesteps)
+    avg_loss = test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config, timesteps, steps_done)
 
     compute = timesteps
+    """
+    avg_loss.backward()
+    static_named_parameters = []
+    for n_and_p in rna_ss_e2e.named_parameters():
+        static_named_parameters.append(n_and_p)
+
+    with open("output_model_name_loss.txt", "a") as txt_file:
+        for name_and_param in static_named_parameters:
+            name, old_param = name_and_param
+            txt_file.write(name + " " + str(old_param.data.shape))
+            if old_param.grad is not None:
+                txt_file.write(str(old_param.grad.shape) + "\n")
+            else:
+                txt_file.write("??????\n")
+    sys.exit()
+    """
     return avg_loss, compute
 
 pos_weight = torch.Tensor([300]).cuda()#.to(device)
@@ -1173,7 +1211,7 @@ criterion_bce_weighted = torch.nn.BCEWithLogitsLoss(
     pos_weight = pos_weight)
 criterion_mse = torch.nn.MSELoss(reduction='sum')
 
-def test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config, timesteps): 
+def test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config, timesteps, steps_done): 
     #pp_steps = config.pp_steps
     pp_steps = timesteps
     pp_loss = config.pp_loss
@@ -1199,6 +1237,15 @@ def test_net(pred_contacts, a_pred_list, contact_masks, contacts_batch, config, 
     loss_a = mse_coeff*loss_a
 
     loss = loss_u + loss_a
+
+    if steps_done % OUT_STEP ==0:
+        print('Stage 3, step: {}, loss_u: {}, loss_a: {}, loss: {}'.format(
+            steps_done, loss_u, loss_a, loss))
+
+        final_pred = a_pred_list[-1].cpu()>0.5
+        f1 = list(map(lambda i: F1_low_tri(final_pred.cpu()[i], 
+            contacts_batch.cpu()[i]), range(contacts_batch.shape[0])))
+        print('Average training F1 score: ', np.average(f1))
     return loss
 
 

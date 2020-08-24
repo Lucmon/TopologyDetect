@@ -92,8 +92,8 @@ flags.DEFINE_integer('seed', 0, 'Random seed for numpy, pytorch and random')
 
 flags.DEFINE_integer('budget', 2000, 'multiple of test_horizon we run for')
 
-flags.DEFINE_integer('train_horizon', 9, 'truncated horizon of problem')
-flags.DEFINE_integer('test_horizon', 9, 'full horizon of problem')
+flags.DEFINE_integer('train_horizon', 5, 'truncated horizon of problem')
+flags.DEFINE_integer('test_horizon', 5, 'full horizon of problem')
 flags.DEFINE_integer('test_frequency', None, 'test freq')
 flags.DEFINE_integer('calibrate_frequency', 5, 'calibrate freq')
 flags.DEFINE_boolean('compute_penalty', True, 'penalize RT due to multiple '
@@ -101,6 +101,13 @@ flags.DEFINE_boolean('compute_penalty', True, 'penalize RT due to multiple '
 flags.DEFINE_string('optimizer', 'sgd', 'sgd adam or mom')
 flags.DEFINE_float('momentum', 0.9, 'momentum for SGD')
 flags.DEFINE_float('meta_lr', None, 'meta-optimization learning rate')
+flags.DEFINE_float('norm_clip', -1.0,
+                   'clip grads to this norm before doing RT')
+flags.DEFINE_float('post_clip', 1.0, 'clip before applying grads')
+flags.DEFINE_boolean('clip_intermediate', False,
+                     'clip intermediate grads to '
+                     'max norm of observed final grad')
+flags.DEFINE_float('exp_decay', 0.9, 'exp decay constant')
 
 def clip_by_norm(array, norm):
     if isinstance(array, list):
@@ -209,20 +216,15 @@ def proc_loss(losses, weight_fn=None, idxs=None):
         idxs = [i for i in range(len(losses))]
     else:
         idxs = [i for i in idxs if i < len(losses)]
-    print(idxs)
-    print(losses)
     if weight_fn is None:
         loss = losses[-1]
     else:
         loss = 0.
         # pdb.set_trace()
-        print("weight:")
         for i in range(len(idxs)):
-            print(weight_fn(idxs[i], len(losses)))
             l_i = losses[idxs[i]]
             l_iminus1 = 0. if i < 1 else losses[idxs[i-1]]
             diff = l_i - l_iminus1
-            print(diff)
             loss = diff * weight_fn(idxs[i], len(losses)) + loss
 
     return loss
@@ -364,24 +366,35 @@ def make_telescope_and_weight():
 
     return telescope, weight_fn
 
-
-def loss_and_grads(loss_fn, inputs_batch, config, state, params, optimizer, i):
+def loss_and_grads(loss_fn, inputs_batch, config, state, params, optimizer, i, steps_done):
     optimizer.zero_grad()
     #loss, compute = loss_fn(state, params, i)
-    loss, compute = loss_fn(state, params, inputs_batch, config, i)
+    loss, compute = loss_fn(state, params, inputs_batch, config, i, steps_done)
     loss.backward()
     grads = []
+    with open("output_model.txt", "a") as txt_file:
+        for p in params:
+            txt_file.write(str(p.data.size()) + "\n")
+
+    with open("output_params.txt", "a") as txt_file:
+        for p in params:
+            if p.grad is None:
+                txt_file.write("?????\n")
+            else:
+                txt_file.write(str(p.data.size()) + "\n")
     for p in params:
         if p.grad is not None:
-            print(p.data, p.grad)
-    for p in params:
-        g = p.grad.clone().detach()
-        clip_non_finite_torch(g)
-        grads.append(g)
+            g = p.grad.clone().detach()
+            clip_non_finite_torch(g)
+            grads.append(g)
+        else:
+            grads.append(None)
     if FLAGS.norm_clip > 0:
         grads = clip_by_norm_torch(grads, FLAGS.norm_clip)
     loss = loss.data.cpu().numpy()
     loss[not np.isfinite(loss)] = 0.0
+    
+    steps_done += 1
     return loss, grads, compute
 
 
@@ -389,10 +402,13 @@ def deltas_from_grads_torch(grads_per_idx_torch):
     '''grads_per_idx_torch: list n_idxs of list n_params'''
     sq_norms = np.zeros([len(grads_per_idx_torch) + 1, len(grads_per_idx_torch)])
     for i in range(len(grads_per_idx_torch) + 1):
-        g1 = [0. for _ in grads_per_idx_torch[0]] if i == 0 else grads_per_idx_torch[i - 1]
+        g1 = torch.FloatTensor([0. for _ in grads_per_idx_torch[0]]).cuda()\
+             if i == 0 else grads_per_idx_torch[i - 1]
         for j in range(i, len(grads_per_idx_torch)):
             g2 = grads_per_idx_torch[j]
-            diffs = [(g2_ - g1_) for g2_, g1_ in zip(g2, g1)]
+
+            diffs = [(g2_ - g1_) if g2_ is not None else torch.FloatTensor([0]).cuda() \
+                         for g2_, g1_ in zip(g2, g1)]
             for d in diffs:
                 clip_non_finite_torch(d)
             if FLAGS.post_clip > 0:
@@ -453,9 +469,11 @@ def update_running_dnorm(running_dnorm, sq_norms):
         (1. - FLAGS.exp_decay) * sq_norms)
     return running_dnorm
 '''
-def do_convergence_update(grads_torch, params, optimizer):
-    grads_per_param = [[g[pidx] for g in grads_torch]
+def do_convergence_update(grads_torch, params, optimizer):   
+    grads_per_param = [[g[pidx] if g[pidx] is not None \
+                else torch.FloatTensor([0.]).cuda() for g in grads_torch]
            for pidx in range(len(params))]
+    
     processed_grads = [
         proc_grads(g, None)
         for g in grads_per_param]
@@ -464,10 +482,15 @@ def do_convergence_update(grads_torch, params, optimizer):
         processed_grads = clip_by_norm_torch(processed_grads, FLAGS.post_clip)
 
     optimizer.zero_grad()
-
     for p, g in zip(params, processed_grads):
-        p.grad = g
-
+        print(p.size())
+        print(g.size())
+        if g.size() == torch.Size([1]) and g[0] == 0:
+            print("Nonetype")
+            p.grad = torch.zeros(p.data.shape).cuda()
+        else:
+            print("Has Grads")
+            p.grad = g
     optimizer.step()
 
 
@@ -482,7 +505,7 @@ def make_problem():
             FLAGS.meta_lr = 3e-2
 
 def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
-    setproctitle(FLAGS.name)
+    # setproctitle(FLAGS.name)
 
     logger, tflogger = make_logger()
 
@@ -614,7 +637,11 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
                 last_good_params = copy.deepcopy(params)
             logger.info("Test time: {}".format(t.interval))
 
+        
         # convegence update
+        print("*******************")
+        print("Convergence Update")
+        print("*******************")
         if idx_counter >= convergence_counter:
             with Timer() as t:
                 for contacts, seq_embeddings, matrix_reps, seq_lens in train_generator:
@@ -637,10 +664,11 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
                     computes = []
                     with Timer() as t2:
                         state = make_state_fn(2**FLAGS.train_horizon+1)
+                        # iterate all the idxs/timesteps
                         for j in range(FLAGS.train_horizon + 1):
                             l, g, c = loss_and_grads(
                                 train_loss_fn, inputs_batch, config, state,  # train_loss_fn
-                                params, optimizer, 2**(j) + 1)
+                                params, optimizer, 2**(j) + 1, step)
                             if j > 0 and FLAGS.cumulative_regret:
                                 l = l + losses[j-1]
                                 g = [g1 + g2 for g1, g2 in zip(g, grads_torch[j-1])]
@@ -691,8 +719,11 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
                             compute = compute + sum(computes)
                     logger.info("Convergence update time: {}".format(t2.interval))
             logger.info("Convergence time: {}".format(t.interval))
-
+        
         # train
+        print("***************")
+        print("Training...")
+        print("***************")
         with Timer() as t:
             for contacts, seq_embeddings, matrix_reps, seq_lens in train_generator:
                 contacts_batch = torch.Tensor(contacts.float()).cuda()#.to(device)
@@ -733,7 +764,7 @@ def run_experiment(params, loaders, train_loss_fn, eval_fn, make_state_fn):
                     if j in telescope.idxs:
                         l, g, c = loss_and_grads(
                             train_loss_fn, inputs_batch, config, state,  # train_loss_fn
-                            params, optimizer, 2**(j) + 1)
+                            params, optimizer, 2**(j) + 1, step)
                     else:
                         l = 0.0
                         g = [torch.zeros_like(p.data)
@@ -956,7 +987,8 @@ def measure_convergence(losses, grads_per_idx_torch, params, telescope,
                                 int(compute/(2**FLAGS.test_horizon+1)))
         tflogger.log_images('param_' + str(pidx) + '_grad',
                             [make_img_plot(
-                                [gpi[pidx].sum().item() for gpi in grads_per_idx_torch],
+                                [gpi[pidx].sum().item() if gpi[pidx] is not None else 0 \
+                                 for gpi in grads_per_idx_torch],
                                 title='param_' + str(pidx) + '_grad by unroll step')],
                             step)
 
